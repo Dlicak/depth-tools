@@ -45,6 +45,16 @@ if os.path.exists(CONFIG):
 STATE = {"busy": False}
 
 
+def open_path(path):
+    try:
+        if os.name == "nt":
+            os.startfile(path)
+        else:
+            os.system(f'xdg-open "{path}" &')
+    except Exception:
+        pass
+
+
 def apply_colormap(gray):
     arr = np.asarray(gray.convert("L"), dtype=np.float32)
     t = arr / 255.0
@@ -722,10 +732,10 @@ class DepthUI(tk.Tk):
         messagebox.showerror("Ошибка", msg)
 
     def open_result(self):
-        os.system(f'xdg-open "{OUT}/photo_color_plus_depth.png" &')
+        open_path(os.path.join(OUT, "photo_color_plus_depth.png"))
 
     def open_folder(self):
-        os.system(f'xdg-open "{OUT}" &')
+        open_path(OUT)
 
 
 if __name__ == "__main__":

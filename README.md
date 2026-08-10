@@ -11,23 +11,38 @@
 
 ## Установка
 
+### Linux
+
 ```bash
 git clone https://github.com/Dlicak/depth-tools
 cd depth-tools
 python3 -m venv .venv
-.venv/bin/pip install onnxruntime numpy pillow
+.venv/bin/pip install -r requirements.txt
 ```
 
 Положите ONNX-модель в `~/Z-depth/`:
 - `depth_anything_v2_small.onnx` (~99 МБ)
 
-## Запуск
+Запуск: `.venv/bin/python depth_ui.py`
 
-```bash
-.venv/bin/python depth_ui.py
+### Windows
+
+Требуется [Python 3](https://www.python.org/downloads/) (установите с галочкой «Add Python to PATH»).
+
+```bat
+git clone https://github.com/Dlicak/depth-tools
+cd depth-tools
 ```
 
-Результаты сохраняются в `~/Z-depth/` (photo_depth.png, photo_depth_overlay.png, photo_dof.png, photo_color_plus_depth.png, photo_depth_16.png).
+Просто запустите двойным кликом **`depth_ui.bat`** — он сам создаст виртуальное окружение, установит зависимости (`onnxruntime`, `numpy`, `pillow`), проверит модель и откроет приложение.
+
+Перед первым запуском положите `depth_anything_v2_small.onnx` в `%USERPROFILE%\Z-depth\`.
+
+Все пути на Windows такие же портативные (см. «Пути» ниже) — каталог данных `%USERPROFILE%\Z-depth`.
+
+## Результаты
+
+Файлы сохраняются в каталоге данных (`~/Z-depth` / `%USERPROFILE%\Z-depth`): `photo_depth.png`, `photo_depth_overlay.png`, `photo_dof.png`, `photo_color_plus_depth.png`, `photo_depth_16.png` (если включён 16-бит).
 
 ## Предупреждение про ОЗУ
 
@@ -50,10 +65,10 @@ python3 -m venv .venv
 
 Все пути определяются автоматически и настраиваются через переменные окружения:
 
-| Переменная | Значение по умолчанию | Назначение |
-|---|---|---|
-| `DEPTH_TOOLS_HOME` | `~/Z-depth` | Каталог данных (настройки, результаты) |
-| `DEPTH_TOOLS_MODELS` | `$DEPTH_TOOLS_HOME` | Где искать ONNX-модели |
-| `DEPTH_TOOLS_SRC` | свежий файл в `~/Downloads` | Исходное фото по умолчанию |
+| Переменная | Linux | Windows | Назначение |
+|---|---|---|---|
+| `DEPTH_TOOLS_HOME` | `~/Z-depth` | `%USERPROFILE%\Z-depth` | Каталог данных (настройки, результаты) |
+| `DEPTH_TOOLS_MODELS` | `$DEPTH_TOOLS_HOME` | `%DEPTH_TOOLS_HOME%` | Где искать ONNX-модели |
+| `DEPTH_TOOLS_SRC` | свежий файл в `~/Downloads` | свежий файл в `%USERPROFILE%\Downloads` | Исходное фото по умолчанию |
 
 Каталог данных создаётся автоматически. Модель ищется в каталоге моделей и рядом со скриптом; если её нет — понятная ошибка вместо падения.
