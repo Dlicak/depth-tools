@@ -12,9 +12,9 @@ import common
 SRC = common.default_src() or "путь/к/фото.png"
 OUT = common.data_dir()
 
-# Модель: large = максимальное качество/детали, small = быстрее и грубее.
+# Модель: Depth Anything V2 small.
 # Положите ONNX в ~/Z-depth (или DEPTH_TOOLS_MODELS).
-MODEL = common.find_model("depth_anything_v2_large.onnx")
+MODEL = common.find_model("depth_anything_v2_small.onnx")
 
 # Разрешение входа модели (разрешение карты глубины ~ этому значению).
 # 518 = быстро и сносно, 1024 = детальнее, 2048 = максимум деталей, но медленно.

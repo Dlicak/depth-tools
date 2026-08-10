@@ -15,7 +15,7 @@ OUT = common.data_dir()
 SRC = common.default_src()
 
 DEFAULTS = {
-    "model": "large",
+    "model": "small",
     "input_size": 1024,
     "unsharp_radius": 3.0,
     "unsharp_percent": 120.0,
@@ -32,6 +32,7 @@ DEFAULTS = {
     "focus_y": -1,
     "focus_width": 25.0,
     "depth16": False,
+    "src_max": 0,
 }
 
 cfg = DEFAULTS.copy()
@@ -129,8 +130,7 @@ class DepthUI(tk.Tk):
         ttk.Label(row, text="Разрешение входа:", width=15).pack(side="left", **pad)
         self.vars["input_mult"] = tk.DoubleVar(value=float(cfg.get("input_mult", 2)))
         self._input_scale = ttk.Scale(row, from_=1, to=5, variable=self.vars["input_mult"],
-                                      orient="horizontal",
-                                      command=lambda _v: self._input_lbl.configure(text=f"{round(self.vars['input_mult'].get()):.0f}"))
+                                      orient="horizontal", command=lambda _v: self._update_input_range())
         self._input_scale.pack(side="left", fill="x", expand=True, padx=10, pady=4)
         self._input_lbl = ttk.Label(row, text=f"{self.vars['input_mult'].get():.0f}", width=8)
         self._input_lbl.pack(side="left", padx=10)
@@ -144,6 +144,15 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         ttk.Checkbutton(row, text="Сжать до 14px", variable=self.vars["compress"],
                         command=self._update_input_range).pack(side="left", padx=25, pady=2)
+
+        # --- сжать оригинал до заданного размера ---
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        ttk.Label(row, text="Сжать оригинал до:").pack(side="left", **pad)
+        self.vars["src_max"] = tk.StringVar(value=f"{cfg.get('src_max', 0)}px")
+        ttk.Combobox(row, textvariable=self.vars["src_max"],
+                     values=["0px (нет)", "256px", "384px", "512px", "768px", "1024px"],
+                     width=10, state="readonly").pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -389,7 +398,7 @@ class DepthUI(tk.Tk):
         if self.vars["compress"].get():
             self._ram_hint.configure(text="")
         elif v >= 5:
-            self._ram_hint.configure(text="Осторожно: 5x может съесть ~32 ГБ ОЗУ")
+            self._ram_hint.configure(text="Осторожно: 5x может съесть более 32 ГБ ОЗУ")
         elif v >= 3:
             self._ram_hint.configure(text="Осторожно: большой множитель сильно увеличивает расход ОЗУ")
         else:
@@ -433,6 +442,11 @@ class DepthUI(tk.Tk):
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         src_img = Image.open(c["src"]).convert("RGB")
+        max_side = int("".join(ch for ch in str(self.vars["src_max"].get()) if ch.isdigit()) or 0)
+        c["src_max"] = max_side
+        if max_side and max(src_img.width, src_img.height) > max_side:
+            s = max_side / max(src_img.width, src_img.height)
+            src_img = src_img.resize((max(1, int(src_img.width * s)), max(1, int(src_img.height * s))), Image.LANCZOS)
         if self.vars["compress"].get():
             scale = (14 * mult) / max(src_img.width, src_img.height)
             c["in_w"] = max(14, int(src_img.width * scale))
@@ -472,6 +486,10 @@ class DepthUI(tk.Tk):
                 raise FileNotFoundError(
                     f"Модель не найдена: {model}\nПоложите ONNX-файл в {common.model_dir()} или задайте DEPTH_TOOLS_MODELS.")
             img = Image.open(c["src"]).convert("RGB")
+            max_side = int(c.get("src_max", 0) or 0)
+            if max_side and max(img.width, img.height) > max_side:
+                s = max_side / max(img.width, img.height)
+                img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
             sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
             nw = int(c["in_w"]) - int(c["in_w"]) % 14
             nh = int(c["in_h"]) - int(c["in_h"]) % 14

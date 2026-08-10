@@ -11,7 +11,7 @@ SRC = common.default_src()
 OUT = common.data_dir()
 
 DEFAULTS = {
-    "model": "large",
+    "model": "small",
     "input_size": 1024,
     "unsharp_radius": 3,
     "unsharp_percent": 120,
@@ -42,7 +42,7 @@ def ask(label, key, fmt=None):
         val = fmt(txt)
     cfg[key] = val
 
-ask("Модель (large/small)", "model", str)
+ask("Модель (small)", "model", str)
 ask("Разрешение входа (518/1024/2048)", "input_size", int)
 ask("Unsharp радиус (2-6)", "unsharp_radius", float)
 ask("Unsharp сила (50-300)", "unsharp_percent", float)
