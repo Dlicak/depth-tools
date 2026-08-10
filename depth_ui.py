@@ -97,44 +97,53 @@ class DepthUI(tk.Tk):
         ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
         ttk.Button(row, text="Поиск фото", command=self.browse_photos).pack(side="left", padx=10, pady=4)
 
-        # --- модель ---
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        ttk.Label(row, text="Модель:").pack(side="left", **pad)
-        self.vars["model"] = tk.StringVar(value=str(cfg["model"]))
-        cmb = ttk.Combobox(row, textvariable=self.vars["model"], values=["large", "small"], width=8, state="readonly")
-        cmb.pack(side="left", padx=10, pady=4)
+        # --- slider helpers: 2 колонки (левая/правая) ---
+        slider_grid = ttk.Frame(self)
+        slider_grid.pack(fill="x", padx=5)
+        slider_grid.columnconfigure(0, weight=1)
+        slider_grid.columnconfigure(1, weight=1)
 
-        # --- slider helpers ---
-        def slider(label, key, lo, hi, step, fmt):
-            row = ttk.Frame(self)
-            row.pack(fill="x")
-            ttk.Label(row, text=label).pack(side="left", **pad)
+        def slider(label, key, lo, hi, fmt, r, c):
+            cell = ttk.Frame(slider_grid)
+            cell.grid(row=r, column=c, sticky="ew", padx=4, pady=3)
+            ttk.Label(cell, text=label, width=15).pack(side="left")
             var = tk.DoubleVar(value=float(cfg[key]))
-            s = ttk.Scale(row, from_=lo, to=hi, variable=var, orient="horizontal", command=lambda _v: lbl.configure(text=fmt(var.get())))
-            s.pack(side="left", fill="x", expand=True, padx=10, pady=4)
-            lbl = ttk.Label(row, text=fmt(var.get()), width=8)
-            lbl.pack(side="left", padx=10)
+            s = ttk.Scale(cell, from_=lo, to=hi, variable=var, orient="horizontal",
+                          command=lambda _v: lbl.configure(text=fmt(var.get())))
+            s.pack(side="left", fill="x", expand=True, padx=6)
+            lbl = ttk.Label(cell, text=fmt(var.get()), width=7)
+            lbl.pack(side="left")
             self.vars[key] = var
 
-        slider("Unsharp радиус", "unsharp_radius", 0, 10, 0.5, lambda v: f"{v:.1f}")
-        slider("Unsharp сила (%)", "unsharp_percent", 0, 400, 5, lambda v: f"{v:.0f}")
-        slider("Unsharp порог", "unsharp_thresh", 0, 10, 0.5, lambda v: f"{v:.1f}")
-        slider("Контраст карты", "depth_contrast", 0.0, 4.0, 0.05, lambda v: f"{v:.2f}")
+        slider("Unsharp радиус", "unsharp_radius", 0, 10, lambda v: f"{v:.1f}", 0, 0)
+        slider("Оверлей", "overlay_alpha", 0, 1, lambda v: f"{v:.2f}", 0, 1)
+        slider("Unsharp сила (%)", "unsharp_percent", 0, 400, lambda v: f"{v:.0f}", 1, 0)
+        slider("Размытие DoF", "blur_strength", 0, 20, lambda v: f"{v:.1f}", 1, 1)
+        slider("Unsharp порог", "unsharp_thresh", 0, 10, lambda v: f"{v:.1f}", 2, 0)
+        slider("Ширина фокуса", "focus_width", 5, 100, lambda v: f"{v:.0f}", 2, 1)
+        slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
 
+        # --- разрешение входа ---
         row = ttk.Frame(self)
         row.pack(fill="x")
-        ttk.Label(row, text="Разрешение входа:").pack(side="left", **pad)
-        self.vars["input_size"] = tk.StringVar(value=str(cfg.get("input_mult", "2")))
-        self._input_spin = ttk.Spinbox(row, from_=1, to=5, textvariable=self.vars["input_size"], width=5)
-        self._input_spin.pack(side="left", padx=10, pady=4)
+        ttk.Label(row, text="Разрешение входа:", width=15).pack(side="left", **pad)
+        self.vars["input_mult"] = tk.DoubleVar(value=float(cfg.get("input_mult", 2)))
+        self._input_scale = ttk.Scale(row, from_=1, to=5, variable=self.vars["input_mult"],
+                                      orient="horizontal",
+                                      command=lambda _v: self._input_lbl.configure(text=f"{round(self.vars['input_mult'].get()):.0f}"))
+        self._input_scale.pack(side="left", fill="x", expand=True, padx=10, pady=4)
+        self._input_lbl = ttk.Label(row, text=f"{self.vars['input_mult'].get():.0f}", width=8)
+        self._input_lbl.pack(side="left", padx=10)
         self.vars["compress"] = tk.BooleanVar(value=bool(cfg.get("compress", False)))
-        ttk.Checkbutton(row, text="Сжать до 14px", variable=self.vars["compress"],
-                        command=self._update_input_range).pack(side="left", padx=10)
+        self._ram_hint = ttk.Label(self, text="", foreground="#e06666")
+        self._ram_hint.pack(fill="x", padx=25, pady=(0, 2))
         self._update_input_range()
 
-        slider("Оверлей", "overlay_alpha", 0, 1, 0.01, lambda v: f"{v:.2f}")
-        slider("Размытие DoF", "blur_strength", 0, 20, 0.5, lambda v: f"{v:.1f}")
+        # --- сжать до 14px: под ползунком разрешения ---
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        ttk.Checkbutton(row, text="Сжать до 14px", variable=self.vars["compress"],
+                        command=self._update_input_range).pack(side="left", padx=25, pady=2)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -149,7 +158,6 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         self.vars["focus_enable"] = tk.BooleanVar(value=bool(cfg.get("focus_enable", False)))
         ttk.Checkbutton(row, text="Точка фокуса: клик по предпросмотру", variable=self.vars["focus_enable"]).pack(side="left", padx=10, pady=4)
-        slider("Ширина фокуса", "focus_width", 5, 100, 1, lambda v: f"{v:.0f}")
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -373,13 +381,19 @@ class DepthUI(tk.Tk):
 
     def _update_input_range(self):
         top = 100 if self.vars["compress"].get() else 5
-        self._input_spin.configure(to=top)
-        try:
-            v = int(str(self.vars["input_size"].get()).replace("x", "").strip())
-        except ValueError:
-            v = 1
-        if v > top:
-            self.vars["input_size"].set(str(top))
+        self._input_scale.configure(to=top)
+        if float(self.vars["input_mult"].get()) > top:
+            self.vars["input_mult"].set(float(top))
+        self._input_lbl.configure(text=f"{self.vars['input_mult'].get():.0f}")
+        v = int(round(float(self.vars["input_mult"].get())))
+        if self.vars["compress"].get():
+            self._ram_hint.configure(text="")
+        elif v >= 5:
+            self._ram_hint.configure(text="Осторожно: 5x может съесть ~32 ГБ ОЗУ")
+        elif v >= 3:
+            self._ram_hint.configure(text="Осторожно: большой множитель сильно увеличивает расход ОЗУ")
+        else:
+            self._ram_hint.configure(text="")
 
     def _cur_click(self, e):
         if self.vars["focus_enable"].get():
@@ -415,9 +429,9 @@ class DepthUI(tk.Tk):
 
     def collect(self):
         c = dict(cfg)
-        c["model"] = self.vars["model"].get()
+        c["model"] = "small"
         c["src"] = self.var_src.get()
-        mult = int(str(self.vars["input_size"].get()).replace("x", "").strip())
+        mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         src_img = Image.open(c["src"]).convert("RGB")
         if self.vars["compress"].get():
             scale = (14 * mult) / max(src_img.width, src_img.height)
