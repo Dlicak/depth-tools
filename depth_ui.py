@@ -5,7 +5,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageTk
+from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageTk, ImageDraw
 import onnxruntime as ort
 
 CONFIG = "/home/lynx/Z-depth/settings.json"
@@ -24,6 +24,12 @@ DEFAULTS = {
     "out_size": "300x300",
     "invert": False,
     "dof_near": False,
+    "compress": False,
+    "focus_enable": False,
+    "focus_x": -1,
+    "focus_y": -1,
+    "focus_width": 25.0,
+    "depth16": False,
 }
 
 cfg = DEFAULTS.copy()
@@ -37,7 +43,7 @@ STATE = {"busy": False}
 
 
 def apply_colormap(gray):
-    arr = np.asarray(gray, dtype=np.float32)
+    arr = np.asarray(gray.convert("L"), dtype=np.float32)
     t = arr / 255.0
     stops = [
         (0.0, (0.0, 0.0, 0.5)),
@@ -53,14 +59,21 @@ def apply_colormap(gray):
     return Image.fromarray((np.stack([r, g, b], axis=-1) * 255).astype(np.uint8), "RGB")
 
 
-def apply_relief(gray):
+def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
+    r = max(0.0, float(radius))
     g = np.asarray(gray.convert("L"), dtype=np.float32)
+    if smooth_map is not None and smooth_radius > 0:
+        a = np.asarray(gray.filter(ImageFilter.GaussianBlur(r)), dtype=np.float32)
+        b = np.asarray(gray.filter(ImageFilter.GaussianBlur(r + smooth_radius)), dtype=np.float32)
+        g = a * (1 - smooth_map) + b * smooth_map
+    else:
+        g = np.asarray(gray.filter(ImageFilter.GaussianBlur(r)), dtype=np.float32)
     gy, gx = np.gradient(g)
     n = np.sqrt(1 + gx * gx + gy * gy)
     lx, ly, lz = 0.5, 0.5, 1.0
     ln = np.sqrt(lx * lx + ly * ly + lz * lz)
     shade = np.clip((-gx * lx - gy * ly + lz) / (n * ln), 0, 1)
-    return Image.fromarray((shade * 255).astype(np.uint8), "L")
+    return Image.fromarray((shade * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(r * 0.5))
 
 
 class DepthUI(tk.Tk):
@@ -105,26 +118,36 @@ class DepthUI(tk.Tk):
         slider("Unsharp радиус", "unsharp_radius", 0, 10, 0.5, lambda v: f"{v:.1f}")
         slider("Unsharp сила (%)", "unsharp_percent", 0, 400, 5, lambda v: f"{v:.0f}")
         slider("Unsharp порог", "unsharp_thresh", 0, 10, 0.5, lambda v: f"{v:.1f}")
-        slider("Контраст карты", "depth_contrast", 1.0, 3.0, 0.05, lambda v: f"{v:.2f}")
+        slider("Контраст карты", "depth_contrast", 0.0, 4.0, 0.05, lambda v: f"{v:.2f}")
 
         row = ttk.Frame(self)
         row.pack(fill="x")
         ttk.Label(row, text="Разрешение входа:").pack(side="left", **pad)
         self.vars["input_size"] = tk.StringVar(value=str(cfg.get("input_mult", "2")))
-        cmb = ttk.Combobox(row, textvariable=self.vars["input_size"],
-                           values=["1x", "2x", "3x", "4x", "5x"], width=8, state="readonly")
-        cmb.pack(side="left", padx=10, pady=4)
-        ttk.Label(row, text="(множитель размера фото)").pack(side="left", **pad)
+        self._input_spin = ttk.Spinbox(row, from_=1, to=5, textvariable=self.vars["input_size"], width=5)
+        self._input_spin.pack(side="left", padx=10, pady=4)
+        self.vars["compress"] = tk.BooleanVar(value=bool(cfg.get("compress", False)))
+        ttk.Checkbutton(row, text="Сжать до 14px", variable=self.vars["compress"],
+                        command=self._update_input_range).pack(side="left", padx=10)
+        self._update_input_range()
 
-        slider("Оверлей (0-1)", "overlay_alpha", 0, 1, 0.01, lambda v: f"{v:.2f}")
+        slider("Оверлей", "overlay_alpha", 0, 1, 0.01, lambda v: f"{v:.2f}")
         slider("Размытие DoF", "blur_strength", 0, 20, 0.5, lambda v: f"{v:.1f}")
 
         row = ttk.Frame(self)
         row.pack(fill="x")
         self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
-        ttk.Checkbutton(row, text="Инверсия (близко ⇄ далеко)", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
+        ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
+        self.vars["depth16"] = tk.BooleanVar(value=bool(cfg.get("depth16", False)))
+        ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
+
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        self.vars["focus_enable"] = tk.BooleanVar(value=bool(cfg.get("focus_enable", False)))
+        ttk.Checkbutton(row, text="Точка фокуса: клик по предпросмотру", variable=self.vars["focus_enable"]).pack(side="left", padx=10, pady=4)
+        slider("Ширина фокуса", "focus_width", 5, 100, 1, lambda v: f"{v:.0f}")
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -133,7 +156,6 @@ class DepthUI(tk.Tk):
         cmb = ttk.Combobox(row, textvariable=self.vars["out_mult"],
                            values=["1x", "2x", "3x", "4x"], width=8, state="readonly")
         cmb.pack(side="left", padx=10, pady=4)
-        ttk.Label(row, text="(множитель размера фото)").pack(side="left", **pad)
 
         # --- кнопки ---
         row = ttk.Frame(self)
@@ -165,11 +187,15 @@ class DepthUI(tk.Tk):
 
         prev_frame = ttk.LabelFrame(grid, text="Предыдущий")
         prev_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 5))
+        self.lbl_size_prev = ttk.Label(prev_frame, text="—")
+        self.lbl_size_prev.pack(fill="x", padx=4, pady=(2, 0))
         self.prev_view = tk.Label(prev_frame, bg="#000", text="—", fg="#888")
         self.prev_view.pack(fill="both", expand=True)
 
         cur_frame = ttk.LabelFrame(grid, text="Текущий")
         cur_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 0))
+        self.lbl_size_cur = ttk.Label(cur_frame, text="Размер: —")
+        self.lbl_size_cur.pack(fill="x", padx=4, pady=(2, 0))
         self.cur_view = tk.Label(cur_frame, bg="#000", text="Обработайте фото", fg="#888")
         self.cur_view.pack(fill="both", expand=True)
 
@@ -185,8 +211,11 @@ class DepthUI(tk.Tk):
         self._cur_rel = None
         self._src_img = None
 
+        self._focus_x = int(cfg.get("focus_x", -1))
+        self._focus_y = int(cfg.get("focus_y", -1))
+
         self.prev_view.bind("<Button-1>", lambda _e: self.show_large(0))
-        self.cur_view.bind("<Button-1>", lambda _e: self.show_large(1))
+        self.cur_view.bind("<Button-1>", self._cur_click)
 
         self.bigwin = None
 
@@ -243,7 +272,24 @@ class DepthUI(tk.Tk):
         win.bind_all("<Button-4>", on_wheel)
         win.bind_all("<Button-5>", on_wheel)
 
+        pan_state = {"y": 0}
+
+        def mid_start(e):
+            pan_state["y"] = e.y
+
+        def mid_move(e):
+            dy = e.y - pan_state["y"]
+            pan_state["y"] = e.y
+            canvas.yview_scroll(-dy, "pixels")
+
+        canvas.bind("<ButtonPress-2>", mid_start)
+        canvas.bind("<B2-Motion>", mid_move)
+        inner.bind("<ButtonPress-2>", mid_start)
+        inner.bind("<B2-Motion>", mid_move)
+
         tiles = []
+        tile_refs = {}
+        load_gen = [0]
 
         def relayout(*_a):
             cols = max(1, canvas.winfo_width() // 170)
@@ -252,10 +298,24 @@ class DepthUI(tk.Tk):
 
         canvas.bind("<Configure>", relayout)
 
+        def load_thumbs(paths):
+            for path in paths:
+                if load_gen[0] == 0 or path not in tile_refs:
+                    return
+                try:
+                    im = Image.open(path)
+                    im.thumbnail((150, 150), Image.LANCZOS)
+                    im = im.convert("RGB")
+                except Exception:
+                    continue
+                self.after(0, lambda p=path, im=im: self._set_thumb(p, im, tile_refs, load_gen))
+
         def refresh(*_a):
+            load_gen[0] += 1
             for w in inner.winfo_children():
                 w.destroy()
             tiles.clear()
+            tile_refs.clear()
             folder = folders[var_fold.get()]
             q = var_search.get().strip().lower()
             try:
@@ -263,7 +323,7 @@ class DepthUI(tk.Tk):
             except Exception:
                 files = []
             exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
-            count = 0
+            paths = []
             for i, name in enumerate(files):
                 if not name.lower().endswith(exts):
                     continue
@@ -271,50 +331,112 @@ class DepthUI(tk.Tk):
                     continue
                 path = os.path.join(folder, name)
                 tile = ttk.Frame(inner, padding=4)
-                try:
-                    im = Image.open(path).convert("RGB")
-                    im.thumbnail((150, 150), Image.LANCZOS)
-                except Exception:
-                    continue
-                photo = ImageTk.PhotoImage(im)
-                self._browse_cache[name] = photo
-                lbl = tk.Label(tile, image=photo, bg="#2a2a2a", cursor="hand2")
-                lbl.image = photo
+                lbl = tk.Label(tile, text="…", bg="#2a2a2a", fg="#666", cursor="hand2", width=20, height=10)
                 lbl.pack()
                 tname = name if len(name) <= 22 else name[:19] + "..."
                 lbln = tk.Label(tile, text=tname, bg="#1e1e1e", fg="#ccc")
                 lbln.pack()
                 lbl.bind("<Button-1>", lambda _e, p=path: self._pick_photo(p, win))
                 lbln.bind("<Button-1>", lambda _e, p=path: self._pick_photo(p, win))
+                lbl.bind("<ButtonPress-2>", mid_start)
+                lbl.bind("<B2-Motion>", mid_move)
+                lbln.bind("<ButtonPress-2>", mid_start)
+                lbln.bind("<B2-Motion>", mid_move)
                 tiles.append(tile)
-                count += 1
+                tile_refs[path] = lbl
+                paths.append(path)
             win.after_idle(relayout)
+            threading.Thread(target=load_thumbs, args=(paths,), daemon=True).start()
 
         var_fold.trace_add("write", refresh)
         var_search.trace_add("write", refresh)
         refresh()
-        win.after(100, refresh)
+
+    def _set_thumb(self, path, im, tile_refs, load_gen):
+        if load_gen[0] == 0 or path not in tile_refs:
+            return
+        lbl = tile_refs[path]
+        try:
+            photo = ImageTk.PhotoImage(im)
+        except Exception:
+            return
+        self._browse_cache[path] = photo
+        lbl.configure(image=photo, text="", width=0, height=0)
+        lbl.image = photo
 
     def _pick_photo(self, path, win):
         self.var_src.set(path)
         win.destroy()
         self.lbl_status.configure(text=f"Фото выбрано: {path.split('/')[-1]}")
 
+    def _update_input_range(self):
+        top = 100 if self.vars["compress"].get() else 5
+        self._input_spin.configure(to=top)
+        try:
+            v = int(str(self.vars["input_size"].get()).replace("x", "").strip())
+        except ValueError:
+            v = 1
+        if v > top:
+            self.vars["input_size"].set(str(top))
+
+    def _cur_click(self, e):
+        if self.vars["focus_enable"].get():
+            self._set_focus(e)
+            return
+        self.show_large(1)
+
+    def _set_focus(self, e):
+        scale = getattr(self.cur_view, "_disp_scale", None)
+        if scale is None:
+            return
+        img = self._all_images()[1]
+        if img is None:
+            return
+        x = int((e.x - self.cur_view._disp_ox) / scale)
+        y = int((e.y - self.cur_view._disp_oy) / scale)
+        if 0 <= x < img.width and 0 <= y < img.height:
+            self._focus_x = x
+            self._focus_y = y
+            self.lbl_status.configure(text=f"Фокус: {x}, {y}")
+            self.show_pair()
+
+    def _draw_focus_marker(self, img):
+        scale = self.cur_view._disp_scale
+        x = int(self._focus_x * scale)
+        y = int(self._focus_y * scale)
+        d = ImageDraw.Draw(img)
+        r = 10
+        d.line([(x - r, y), (x + r, y)], fill=(255, 70, 70), width=2)
+        d.line([(x, y - r), (x, y + r)], fill=(255, 70, 70), width=2)
+        d.ellipse([x - r, y - r, x + r, y + r], outline=(255, 70, 70), width=2)
+        return img
+
     def collect(self):
         c = dict(cfg)
         c["model"] = self.vars["model"].get()
         c["src"] = self.var_src.get()
-        mult = int(self.vars["input_size"].get().replace("x", ""))
+        mult = int(str(self.vars["input_size"].get()).replace("x", "").strip())
         src_img = Image.open(c["src"]).convert("RGB")
-        c["in_w"] = max(256, mult * src_img.width)
-        c["in_h"] = max(256, mult * src_img.height)
-        out_mult = int(self.vars["out_mult"].get().replace("x", ""))
-        c["out_size"] = f"{out_mult * src_img.width}x{out_mult * src_img.height}"
+        if self.vars["compress"].get():
+            scale = (14 * mult) / max(src_img.width, src_img.height)
+            c["in_w"] = max(14, int(src_img.width * scale))
+            c["in_h"] = max(14, int(src_img.height * scale))
+            c["out_size"] = f"{src_img.width}x{src_img.height}"
+        else:
+            c["in_w"] = max(256, mult * src_img.width)
+            c["in_h"] = max(256, mult * src_img.height)
+            out_mult = int(self.vars["out_mult"].get().replace("x", ""))
+            c["out_size"] = f"{out_mult * src_img.width}x{out_mult * src_img.height}"
         for k, var in self.vars.items():
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
         c["invert"] = bool(self.vars["invert"].get())
         c["dof_near"] = bool(self.vars["dof_near"].get())
+        c["depth16"] = bool(self.vars["depth16"].get())
+        c["focus_enable"] = bool(self.vars["focus_enable"].get())
+        c["focus_width"] = float(self.vars["focus_width"].get())
+        c["focus_x"] = self._focus_x
+        c["focus_y"] = self._focus_y
         return c
 
     def run(self):
@@ -354,33 +476,60 @@ class DepthUI(tk.Tk):
             if c["invert"]:
                 depth = depth.point(lambda p: 255 - p)
 
-            depth.save(f"{OUT}/photo_depth.png")
-            overlay = Image.blend(img, depth.convert("RGB"), c["overlay_alpha"])
-            overlay.save(f"{OUT}/photo_depth_overlay.png")
-            depth_rgb = depth.convert("RGB")
-            blurred = depth_rgb.filter(ImageFilter.GaussianBlur(c["blur_strength"]))
-            far = depth.point(lambda p: 255 - p)
-            if c["dof_near"]:
-                dof = Image.composite(depth_rgb, blurred, far)
-            else:
-                dof = Image.composite(blurred, depth_rgb, far)
-            dof.save(f"{OUT}/photo_dof.png")
-
             out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
             w, h = [int(x) for x in out_size.split("x")]
-            a = img.convert("RGB").resize((w, h), Image.LANCZOS)
-            b = depth.convert("RGB").resize((w, h), Image.LANCZOS)
+            depth_out = depth.convert("RGB").resize((w, h), Image.LANCZOS)
+            img_out = img.convert("RGB").resize((w, h), Image.LANCZOS)
+
+            scale_ratio = max(w, h) / max(1, max(int(c["in_w"]) - int(c["in_w"]) % 14, int(c["in_h"]) - int(c["in_h"]) % 14))
+            smooth = min(3.0, max(0.0, (scale_ratio - 1) * 0.35))
+            if smooth > 0:
+                depth_out = depth_out.filter(ImageFilter.GaussianBlur(smooth))
+
+            depth_out.save(f"{OUT}/photo_depth.png")
+            if c["depth16"]:
+                df = d.copy()
+                if c["depth_contrast"] != 1.0:
+                    df = (df - 0.5) * c["depth_contrast"] + 0.5
+                if c["invert"]:
+                    df = 1 - df
+                df = np.clip(df, 0, 1)
+                Image.fromarray((df * 65535).astype(np.uint16)).resize((w, h), Image.LANCZOS).save(f"{OUT}/photo_depth_16.png")
+            overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
+            overlay.save(f"{OUT}/photo_depth_overlay.png")
+            rel_map = None
+            if c["focus_enable"] and c["focus_x"] >= 0 and c["focus_y"] >= 0:
+                L = np.asarray(depth_out.convert("L"), dtype=np.float32)
+                d0 = float(L[int(c["focus_y"]) % L.shape[0], int(c["focus_x"]) % L.shape[1]])
+                fw = max(1.0, float(c["focus_width"]))
+                sharp = np.clip(1 - np.abs(L - d0) / fw, 0, 1)
+                sharp = sharp * sharp * (3 - 2 * sharp)
+                rel_map = 1 - sharp
+                far = Image.fromarray((rel_map * 255).astype(np.uint8), "L")
+                dof = Image.composite(depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 8)), depth_out, far)
+            else:
+                blurred = depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 3))
+                far = depth_out.convert("L").point(lambda p: 255 - p)
+                if c["dof_near"]:
+                    dof = Image.composite(depth_out, blurred, far)
+                    rel_map = np.asarray(depth_out.convert("L"), dtype=np.float32) / 255.0
+                else:
+                    dof = Image.composite(blurred, depth_out, far)
+            dof.save(f"{OUT}/photo_dof.png")
+
+            a = img_out
+            b = depth_out
             side = Image.new("RGB", (w * 2 + 10, h), (40, 40, 40))
             side.paste(a, (0, 0))
             side.paste(b, (w + 10, 0))
             side.save(f"{OUT}/photo_color_plus_depth.png")
 
-            depth_p = depth.resize((w, h), Image.LANCZOS)
-            overlay_p = overlay.resize((w, h), Image.LANCZOS)
-            dof_p = dof.resize((w, h), Image.LANCZOS)
-            col_p = apply_colormap(depth).resize((w, h), Image.LANCZOS)
-            rel_p = apply_relief(depth).resize((w, h), Image.LANCZOS)
-            src_p = img.convert("RGB").resize((w, h), Image.LANCZOS)
+            depth_p = depth_out.copy()
+            overlay_p = overlay.copy()
+            dof_p = dof.copy()
+            col_p = apply_colormap(depth_out)
+            rel_p = apply_relief(depth_out.convert("L"), c["blur_strength"], rel_map, c["blur_strength"])
+            src_p = img_out.copy()
 
             self.after(0, lambda: self.done(side.copy(), depth_p.copy(), overlay_p.copy(), dof_p.copy(),
                                             col_p.copy(), rel_p.copy(), src_p.copy()))
@@ -504,8 +653,11 @@ class DepthUI(tk.Tk):
         self.big_canvas.coords(self._big_item, cx - w / 2, cy - h / 2)
 
     def show_pair(self):
-        self._set_view(self.prev_view, self._all_images()[0], "—")
-        self._set_view(self.cur_view, self._all_images()[1], "Обработайте фото")
+        prev, cur = self._all_images()
+        self.lbl_size_prev.configure(text=f"{prev.width}×{prev.height}" if prev else "—")
+        self.lbl_size_cur.configure(text=f"{cur.width}×{cur.height}" if cur else "—")
+        self._set_view(self.prev_view, prev, "—")
+        self._set_view(self.cur_view, cur, "Обработайте фото")
 
     def _set_view(self, widget, img, placeholder):
         if img is not None:
@@ -514,7 +666,13 @@ class DepthUI(tk.Tk):
             if pw > 10 and ph > 10:
                 scale = min(pw / img.width, ph / img.height)
             w, h = max(1, int(img.width * scale)), max(1, int(img.height * scale))
-            photo = ImageTk.PhotoImage(img.convert("RGB").resize((w, h), Image.LANCZOS))
+            disp = img.convert("RGB").resize((w, h), Image.LANCZOS)
+            widget._disp_scale = scale
+            widget._disp_ox = (pw - w) / 2 if pw > 10 else 0
+            widget._disp_oy = (ph - h) / 2 if ph > 10 else 0
+            if widget is self.cur_view and self.vars["focus_enable"].get() and self._focus_x >= 0:
+                disp = self._draw_focus_marker(disp)
+            photo = ImageTk.PhotoImage(disp)
             widget._photo = photo
             widget.configure(image=photo, text="")
         else:
