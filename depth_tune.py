@@ -4,9 +4,11 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 import onnxruntime as ort
 
-CONFIG = "/home/lynx/Z-depth/settings.json"
-SRC = "/home/lynx/Downloads/download (1).png"
-OUT = "/home/lynx/Z-depth"
+import common
+
+CONFIG = os.path.join(common.data_dir(), "settings.json")
+SRC = common.default_src()
+OUT = common.data_dir()
 
 DEFAULTS = {
     "model": "large",
@@ -54,7 +56,7 @@ json.dump(cfg, open(CONFIG, "w"), indent=2)
 
 w, h = [int(x) for x in cfg["out_size"].split("x")]
 
-MODEL_PATH = f"/home/lynx/Z-depth/depth_anything_v2_{cfg['model']}.onnx"
+MODEL_PATH = common.find_model(f"depth_anything_v2_{cfg['model']}.onnx")
 if not os.path.exists(MODEL_PATH):
     print("Нет модели:", MODEL_PATH)
     raise SystemExit(1)

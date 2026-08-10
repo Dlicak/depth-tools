@@ -1,5 +1,8 @@
+import os
 import numpy as np
 from PIL import Image, ImageFilter
+
+import common
 
 W, H = 1024, 768
 rng = np.random.default_rng(7)
@@ -85,17 +88,17 @@ depth_n[~np.isfinite(depth)] = 0.0
 img = Image.fromarray((orig * 255).astype(np.uint8))
 depth_img = Image.fromarray((depth_n * 255).astype(np.uint8)).convert("L")
 
-img.save("/home/lynx/Z-depth/color.png")
-depth_img.save("/home/lynx/Z-depth/depth.png")
+img.save(os.path.join(common.data_dir(), "color.png"))
+depth_img.save(os.path.join(common.data_dir(), "depth.png"))
 
 # combine 1: depth-of-field (far = blurry)
 blurred = img.filter(ImageFilter.GaussianBlur(6))
 dof = Image.composite(blurred, img, depth_img.point(lambda p: 255 - p))
-dof.save("/home/lynx/Z-depth/color_dof.png")
+dof.save(os.path.join(common.data_dir(), "color_dof.png"))
 
 # combine 2: depth gradient overlay on color photo
 depth_rgb = depth_img.convert("RGB")
 combined = Image.blend(img, depth_rgb, 0.45)
-combined.save("/home/lynx/Z-depth/color_depth_overlay.png")
+combined.save(os.path.join(common.data_dir(), "color_depth_overlay.png"))
 
 print("done")

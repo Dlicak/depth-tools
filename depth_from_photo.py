@@ -1,15 +1,20 @@
+import os
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 import onnxruntime as ort
 
+import common
+
 # ===================== НАСТРОЙКИ (крути тут) =====================
 
-# Исходное фото и куда сохранять
-SRC = "/home/lynx/Downloads/download (1).png"
-OUT = "/home/lynx/Z-depth"
+# Исходное фото (по умолчанию — свежее изображение в ~/Downloads) и куда сохранять.
+# Можно задать DEPTH_TOOLS_SRC и DEPTH_TOOLS_HOME.
+SRC = common.default_src() or "путь/к/фото.png"
+OUT = common.data_dir()
 
-# Модель: large = максимальное качество/детали, small = быстрее и грубее
-MODEL = "/home/lynx/Z-depth/depth_anything_v2_large.onnx"
+# Модель: large = максимальное качество/детали, small = быстрее и грубее.
+# Положите ONNX в ~/Z-depth (или DEPTH_TOOLS_MODELS).
+MODEL = common.find_model("depth_anything_v2_large.onnx")
 
 # Разрешение входа модели (разрешение карты глубины ~ этому значению).
 # 518 = быстро и сносно, 1024 = детальнее, 2048 = максимум деталей, но медленно.

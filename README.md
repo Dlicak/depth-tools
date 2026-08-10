@@ -5,22 +5,39 @@
 ## Компоненты
 
 - `depth_from_photo.py` — простой конвейер: фото -> карта глубины, оверлей, DoF, сравнение "цвет + глубина". Настройки вверху файла.
-- `depth_ui.py` — графический интерфейс (tkinter): выбор фото и модели, слайдеры, предпросмотр (глубина / оверлей / DoF / цветная карта / рельеф 3D / фото), крупный просмотр с зумом.
+- `depth_ui.py` — графический интерфейс (tkinter): выбор фото и модели, слайдеры, предпросмотр (глубина / оверлей / DoF / цветная карта / рельеф 3D / фото), крупный просмотр с зумом, точка фокуса для DoF по клику, 16-бит глубина.
 - `depth_tune.py` — интерактивный подбор настроек через вопросы.
 - `depth_gen.py` — процедурный рендер сцены (сферы) с точной глубиной, без нейросети.
 
-## Модель
+## Установка
 
-Нужен ONNX Depth Anything V2 (large/small) в папке рядом:
+```bash
+git clone https://github.com/Dlicak/depth-tools
+cd depth-tools
+python3 -m venv .venv
+.venv/bin/pip install onnxruntime numpy pillow
+```
+
+Положите ONNX-модели в `~/Z-depth/`:
 - `depth_anything_v2_large.onnx` (~1.3 ГБ)
 - `depth_anything_v2_small.onnx` (~99 МБ)
-
-Зависимости: `onnxruntime`, `numpy`, `pillow`. venv в `depthenv/bin/python`.
 
 ## Запуск
 
 ```bash
-depthenv/bin/python depth_ui.py
+.venv/bin/python depth_ui.py
 ```
 
-Результаты сохраняются в ту же папку (photo_depth.png, photo_depth_overlay.png, photo_dof.png, photo_color_plus_depth.png).
+Результаты сохраняются в `~/Z-depth/` (photo_depth.png, photo_depth_overlay.png, photo_dof.png, photo_color_plus_depth.png, photo_depth_16.png).
+
+## Пути (портативно, без хардкода)
+
+Все пути определяются автоматически и настраиваются через переменные окружения:
+
+| Переменная | Значение по умолчанию | Назначение |
+|---|---|---|
+| `DEPTH_TOOLS_HOME` | `~/Z-depth` | Каталог данных (настройки, результаты) |
+| `DEPTH_TOOLS_MODELS` | `$DEPTH_TOOLS_HOME` | Где искать ONNX-модели |
+| `DEPTH_TOOLS_SRC` | свежий файл в `~/Downloads` | Исходное фото по умолчанию |
+
+Каталог данных создаётся автоматически. Модель ищется в каталоге моделей и рядом со скриптом; если её нет — понятная ошибка вместо падения.

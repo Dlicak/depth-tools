@@ -8,9 +8,11 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageTk, ImageDraw
 import onnxruntime as ort
 
-CONFIG = "/home/lynx/Z-depth/settings.json"
-OUT = "/home/lynx/Z-depth"
-SRC = "/home/lynx/Downloads/download (1).png"
+import common
+
+CONFIG = os.path.join(common.data_dir(), "settings.json")
+OUT = common.data_dir()
+SRC = common.default_src()
 
 DEFAULTS = {
     "model": "large",
@@ -233,10 +235,10 @@ class DepthUI(tk.Tk):
         win.configure(bg="#1e1e1e")
 
         folders = {
-            "Downloads": "/home/lynx/Downloads",
-            "Pictures": "/home/lynx/Pictures",
-            "Desktop": "/home/lynx/Desktop",
-            "Z-depth": "/home/lynx/Z-depth",
+            "Downloads": os.path.join(common.home_dir(), "Downloads"),
+            "Pictures": os.path.join(common.home_dir(), "Pictures"),
+            "Desktop": os.path.join(common.home_dir(), "Desktop"),
+            "Z-depth": common.data_dir(),
         }
         self._browse_cache = {}
 
@@ -451,7 +453,10 @@ class DepthUI(tk.Tk):
 
     def work(self, c):
         try:
-            model = f"/home/lynx/Z-depth/depth_anything_v2_{c['model']}.onnx"
+            model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
+            if not os.path.exists(model):
+                raise FileNotFoundError(
+                    f"Модель не найдена: {model}\nПоложите ONNX-файл в {common.model_dir()} или задайте DEPTH_TOOLS_MODELS.")
             img = Image.open(c["src"]).convert("RGB")
             sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
             nw = int(c["in_w"]) - int(c["in_w"]) % 14
@@ -536,7 +541,7 @@ class DepthUI(tk.Tk):
         except Exception as e:
             msg = str(e)
             import traceback
-            with open("/home/lynx/Z-depth/ui.log", "a") as f:
+            with open(os.path.join(common.data_dir(), "ui.log"), "a") as f:
                 f.write(traceback.format_exc() + "\n")
             self.after(0, lambda msg=msg: self.fail(msg))
 
