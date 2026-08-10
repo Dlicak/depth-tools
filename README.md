@@ -9,6 +9,29 @@
 - `depth_tune.py` — интерактивный подбор настроек через вопросы.
 - `depth_gen.py` — процедурный рендер сцены (сферы) с точной глубиной, без нейросети.
 
+## Установка за один клик
+
+### Windows
+
+1. Скачайте репозиторий (Code → Download ZIP) и распакуйте.
+2. Двойной клик по **`depth_ui.bat`** — он сам:
+   - установит Python 3, если его нет;
+   - создаст виртуальное окружение и поставит зависимости;
+   - скачает модель (~99 МБ);
+   - создаст ярлык «Карта глубины» на рабочем столе;
+   - запустит приложение.
+
+### Linux
+
+```bash
+git clone https://github.com/Dlicak/depth-tools
+cd depth-tools
+chmod +x install.sh
+./install.sh
+```
+
+`install.sh` сам поставит python3-venv (через sudo), окружение, зависимости, скачает модель и запустит приложение.
+
 ## Модель
 
 Нужен ONNX-экспорт **Depth Anything V2 Small** с динамическим входом (вход любого размера, кратного 14).
@@ -24,35 +47,7 @@
 
 `depth_ui.bat` на Windows скачивает модель автоматически при первом запуске.
 
-## Установка
-
-### Linux
-
-```bash
-git clone https://github.com/Dlicak/depth-tools
-cd depth-tools
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
-
-Положите ONNX-модель в `~/Z-depth/` (см. «Модель» выше).
-
-Запуск: `.venv/bin/python depth_ui.py`
-
-### Windows
-
-Требуется [Python 3](https://www.python.org/downloads/) (установите с галочкой «Add Python to PATH»).
-
-```bat
-git clone https://github.com/Dlicak/depth-tools
-cd depth-tools
-```
-
-Просто запустите двойным кликом **`depth_ui.bat`** — он сам создаст виртуальное окружение, установит зависимости (`onnxruntime`, `numpy`, `pillow`), при необходимости скачает модель и откроет приложение.
-
-Перед первым запуском положите `depth_anything_v2_small.onnx` в `%USERPROFILE%\Z-depth\` — или просто запустите `depth_ui.bat`, он скачает её сам.
-
-Все пути на Windows такие же портативные (см. «Пути» ниже) — каталог данных `%USERPROFILE%\Z-depth`.
+Все пути на обеих ОС портативные (см. «Пути» ниже) — каталог данных `~/Z-depth` / `%USERPROFILE%\Z-depth`.
 
 ## Результаты
 
