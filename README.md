@@ -34,20 +34,9 @@ chmod +x install.sh
 
 ## Модель
 
-Нужен ONNX-экспорт **Depth Anything V2 Small** с динамическим входом (вход любого размера, кратного 14).
+Модель (~99 МБ) скачивается автоматически при установке — ничего делать не нужно. Каталог данных: `~/Z-depth` / `%USERPROFILE%\Z-depth`.
 
-Автоскачивание:
-
-```bash
-.venv/bin/python download_model.py        # Linux
-.venv\Scripts\python download_model.py    # Windows
-```
-
-Или вручную: [depth_anything_v2_vits_dynamic.onnx](https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits_dynamic.onnx) (~99 МБ, официальный экспорт [fabio-sim/Depth-Anything-ONNX](https://github.com/fabio-sim/Depth-Anything-ONNX)). Файл нужно переименовать в `depth_anything_v2_small.onnx` и положить в `~/Z-depth/` (`%USERPROFILE%\Z-depth\` на Windows).
-
-`depth_ui.bat` на Windows скачивает модель автоматически при первом запуске.
-
-Все пути на обеих ОС портативные (см. «Пути» ниже) — каталог данных `~/Z-depth` / `%USERPROFILE%\Z-depth`.
+Все пути на обеих ОС портативные (см. «Пути» ниже).
 
 ## Результаты
 
