@@ -494,7 +494,10 @@ class DepthUI(tk.Tk):
             model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
             if not os.path.exists(model):
                 raise FileNotFoundError(
-                    f"Модель не найдена: {model}\nПоложите ONNX-файл в {common.model_dir()} или задайте DEPTH_TOOLS_MODELS.")
+                    f"Модель не найдена: {model}\n"
+                    f"Запустите `python download_model.py` или скачайте вручную:\n"
+                    "https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/"
+                    "depth_anything_v2_vits_dynamic.onnx")
             img = Image.open(c["src"]).convert("RGB")
             max_side = int(c.get("src_max", 0) or 0)
             if max_side and max(img.width, img.height) > max_side:

@@ -9,6 +9,21 @@
 - `depth_tune.py` — интерактивный подбор настроек через вопросы.
 - `depth_gen.py` — процедурный рендер сцены (сферы) с точной глубиной, без нейросети.
 
+## Модель
+
+Нужен ONNX-экспорт **Depth Anything V2 Small** с динамическим входом (вход любого размера, кратного 14).
+
+Автоскачивание:
+
+```bash
+.venv/bin/python download_model.py        # Linux
+.venv\Scripts\python download_model.py    # Windows
+```
+
+Или вручную: [depth_anything_v2_vits_dynamic.onnx](https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits_dynamic.onnx) (~99 МБ, официальный экспорт [fabio-sim/Depth-Anything-ONNX](https://github.com/fabio-sim/Depth-Anything-ONNX)). Файл нужно переименовать в `depth_anything_v2_small.onnx` и положить в `~/Z-depth/` (`%USERPROFILE%\Z-depth\` на Windows).
+
+`depth_ui.bat` на Windows скачивает модель автоматически при первом запуске.
+
 ## Установка
 
 ### Linux
@@ -20,8 +35,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Положите ONNX-модель в `~/Z-depth/`:
-- `depth_anything_v2_small.onnx` (~99 МБ)
+Положите ONNX-модель в `~/Z-depth/` (см. «Модель» выше).
 
 Запуск: `.venv/bin/python depth_ui.py`
 
@@ -34,9 +48,9 @@ git clone https://github.com/Dlicak/depth-tools
 cd depth-tools
 ```
 
-Просто запустите двойным кликом **`depth_ui.bat`** — он сам создаст виртуальное окружение, установит зависимости (`onnxruntime`, `numpy`, `pillow`), проверит модель и откроет приложение.
+Просто запустите двойным кликом **`depth_ui.bat`** — он сам создаст виртуальное окружение, установит зависимости (`onnxruntime`, `numpy`, `pillow`), при необходимости скачает модель и откроет приложение.
 
-Перед первым запуском положите `depth_anything_v2_small.onnx` в `%USERPROFILE%\Z-depth\`.
+Перед первым запуском положите `depth_anything_v2_small.onnx` в `%USERPROFILE%\Z-depth\` — или просто запустите `depth_ui.bat`, он скачает её сам.
 
 Все пути на Windows такие же портативные (см. «Пути» ниже) — каталог данных `%USERPROFILE%\Z-depth`.
 

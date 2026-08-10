@@ -18,12 +18,9 @@ if errorlevel 1 goto :err
 rem ---------- модель ----------
 set "MODELDIR=%USERPROFILE%\Z-depth"
 if not exist "%MODELDIR%\depth_anything_v2_small.onnx" (
-    echo.
-    echo ВАЖНО: положите файл depth_anything_v2_small.onnx ^(~99 МБ^) в:
-    echo   %MODELDIR%
-    echo.
-    pause
-    exit /b 1
+    echo Модель не найдена, скачиваю ~99 МБ...
+    .venv\Scripts\python download_model.py
+    if errorlevel 1 goto :err_model
 )
 
 rem ---------- запуск ----------
@@ -33,5 +30,13 @@ exit /b 0
 :err
 echo.
 echo Ошибка установки. Проверьте, что установлен Python 3 с 'py' в PATH.
+pause
+exit /b 1
+
+:err_model
+echo.
+echo Не удалось скачать модель. Скачайте вручную и положите в %MODELDIR%:
+echo   https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits_dynamic.onnx
+echo (переименуйте в depth_anything_v2_small.onnx)
 pause
 exit /b 1
