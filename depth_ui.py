@@ -121,6 +121,14 @@ def guided_filter(guide, src, radius, eps=0.01):
     return _box_f(a, radius) * guide + _box_f(b, radius)
 
 
+def _blur_f(a, r):
+    out = a
+    rr = max(1, int(round(float(r) * 0.6)))
+    for _ in range(3):
+        out = _box_f(out, rr)
+    return out
+
+
 class DepthUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -610,24 +618,37 @@ class DepthUI(tk.Tk):
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
             rel_map = None
+            dfl = None
+            dl = np.asarray(depth_out.convert("L"), dtype=np.float32) / 255.0
             if c["focus_enable"] and c["focus_x"] >= 0 and c["focus_y"] >= 0:
-                L = np.asarray(depth_out.convert("L"), dtype=np.float32)
-                d0 = float(L[int(c["focus_y"]) % L.shape[0], int(c["focus_x"]) % L.shape[1]])
-                fw = max(1.0, float(c["focus_width"]))
-                sharp = np.clip(1 - np.abs(L - d0) / fw, 0, 1)
+                d0 = float(dl[int(c["focus_y"]) % dl.shape[0], int(c["focus_x"]) % dl.shape[1]])
+                fw = max(1.0, float(c["focus_width"])) / 255.0
+                sharp = np.clip(1 - np.abs(dl - d0) / fw, 0, 1)
                 sharp = sharp * sharp * (3 - 2 * sharp)
                 rel_map = 1 - sharp
                 far = Image.fromarray((rel_map * 255).astype(np.uint8))
                 dof = Image.composite(depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 8)), depth_out, far)
+                if c.get("depth16"):
+                    b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 8))
+                    dfl = b * rel_map + dl * (1 - rel_map)
             else:
                 blurred = depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 3))
                 far = depth_out.convert("L").point(lambda p: 255 - p)
                 if c["dof_near"]:
                     dof = Image.composite(depth_out, blurred, far)
-                    rel_map = np.asarray(depth_out.convert("L"), dtype=np.float32) / 255.0
+                    rel_map = dl
+                    if c.get("depth16"):
+                        b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 3))
+                        dfl = dl * rel_map + b * (1 - rel_map)
                 else:
                     dof = Image.composite(blurred, depth_out, far)
+                    if c.get("depth16"):
+                        m = 1.0 - dl
+                        b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 3))
+                        dfl = b * m + dl * (1 - m)
             dof.save(f"{OUT}/photo_dof.png")
+            if dfl is not None:
+                Image.fromarray((np.clip(dfl, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_dof_16.png")
 
             a = img_out
             b = depth_out

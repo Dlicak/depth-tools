@@ -43,7 +43,7 @@ chmod +x install.sh
 
 ## Результаты
 
-Файлы сохраняются в каталоге данных (`~/Z-depth` / `%USERPROFILE%\Z-depth`): `photo_depth.png`, `photo_depth_overlay.png`, `photo_dof.png`, `photo_color_plus_depth.png`, `photo_depth_16.png` (если включён 16-бит).
+Файлы сохраняются в каталоге данных (`~/Z-depth` / `%USERPROFILE%\Z-depth`): `photo_depth.png`, `photo_depth_overlay.png`, `photo_dof.png`, `photo_color_plus_depth.png`, `photo_depth_16.png` и `photo_dof_16.png` (16-бит, если включён соответствующий флажок).
 
 ## Предупреждение про ОЗУ
 
