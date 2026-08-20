@@ -232,7 +232,6 @@ class DepthUI(tk.Tk):
         row.pack(fill="x", pady=8)
         self.btn_run = ttk.Button(row, text="▶ Применить", command=self.run)
         self.btn_run.pack(side="left", padx=10)
-        ttk.Button(row, text="Открыть результат", command=self.open_result).pack(side="left", padx=10)
         ttk.Button(row, text="Открыть папку", command=self.open_folder).pack(side="left", padx=10)
         self.var_autobig = tk.BooleanVar(value=True)
         ttk.Checkbutton(row, text="Крупное окно автоматически", variable=self.var_autobig).pack(side="left", padx=10)
@@ -819,9 +818,6 @@ class DepthUI(tk.Tk):
         self.btn_run.configure(state="normal")
         self.lbl_status.configure(text="Ошибка")
         messagebox.showerror("Ошибка", msg)
-
-    def open_result(self):
-        open_path(os.path.join(OUT, "photo_color_plus_depth.png"))
 
     def open_folder(self):
         open_path(OUT)
