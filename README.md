@@ -43,7 +43,7 @@ chmod +x install.sh
 
 ## Результаты
 
-Файлы сохраняются в каталоге данных (`~/Z-depth` / `%USERPROFILE%\Z-depth`): `photo_depth.png`, `photo_depth_overlay.png`, `photo_dof.png`, `photo_color_plus_depth.png`, `photo_depth_16.png` и `photo_dof_16.png` (16-бит PNG), `photo_depth_32.tif` и `photo_dof_32.tif` (32-бит float TIFF) — глубокие форматы включаются соответствующими флажками.
+Файлы сохраняются в каталоге данных (`~/Z-depth` / `%USERPROFILE%\Z-depth`): `photo_depth.png`, `photo_depth_overlay.png`, `photo_dof.png`, `photo_color_plus_depth.png`, `photo_colormap.png`, `photo_depth_16.png`, `photo_dof_16.png`, `photo_colormap_16.png` (16-бит), `photo_depth_32.tif` и `photo_dof_32.tif` (32-бит float TIFF) — глубокие форматы включаются соответствующими флажками.
 
 ## Предупреждение про ОЗУ
 

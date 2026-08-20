@@ -57,9 +57,7 @@ def open_path(path):
         pass
 
 
-def apply_colormap(gray):
-    arr = np.asarray(gray.convert("L"), dtype=np.float32)
-    t = arr / 255.0
+def colormap_rgb(t):
     stops = [
         (0.0, (0.0, 0.0, 0.5)),
         (0.2, (0.0, 0.5, 1.0)),
@@ -71,7 +69,23 @@ def apply_colormap(gray):
     r = np.interp(t, [s[0] for s in stops], [s[1][0] for s in stops])
     g = np.interp(t, [s[0] for s in stops], [s[1][1] for s in stops])
     b = np.interp(t, [s[0] for s in stops], [s[1][2] for s in stops])
-    return Image.fromarray((np.stack([r, g, b], axis=-1) * 255).astype(np.uint8))
+    return np.stack([r, g, b], axis=-1)
+
+
+def png_write_rgb16(path, rgb01):
+    import zlib
+    import struct
+    h, w = rgb01.shape[:2]
+    v = np.clip(rgb01, 0.0, 1.0)
+    data = np.round(v * 65535.0).astype(np.uint16)
+    raw = b"".join(b"\x00" + data[y].tobytes() for y in range(h))
+
+    def chunk(tag, payload):
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 16, 2, 0, 0, 0)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
 def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
@@ -668,10 +682,15 @@ class DepthUI(tk.Tk):
             side.paste(b, (w + 10, 0))
             side.save(f"{OUT}/photo_color_plus_depth.png")
 
+            crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
+            Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap.png")
+            if c["depth16"]:
+                png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
+
             depth_p = depth_out.copy()
             overlay_p = overlay.copy()
             dof_p = dof.copy()
-            col_p = apply_colormap(depth_out)
+            col_p = Image.fromarray((crgb * 255.0).round().astype(np.uint8))
             rel_p = apply_relief(depth_out.convert("L"), c["blur_strength"], rel_map, c["blur_strength"])
             src_p = img_out.copy()
 
