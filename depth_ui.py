@@ -70,7 +70,7 @@ def apply_colormap(gray):
     r = np.interp(t, [s[0] for s in stops], [s[1][0] for s in stops])
     g = np.interp(t, [s[0] for s in stops], [s[1][1] for s in stops])
     b = np.interp(t, [s[0] for s in stops], [s[1][2] for s in stops])
-    return Image.fromarray((np.stack([r, g, b], axis=-1) * 255).astype(np.uint8), "RGB")
+    return Image.fromarray((np.stack([r, g, b], axis=-1) * 255).astype(np.uint8))
 
 
 def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
@@ -87,7 +87,7 @@ def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
     lx, ly, lz = 0.5, 0.5, 1.0
     ln = np.sqrt(lx * lx + ly * ly + lz * lz)
     shade = np.clip((-gx * lx - gy * ly + lz) / (n * ln), 0, 1)
-    return Image.fromarray((shade * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(r * 0.5))
+    return Image.fromarray((shade * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(r * 0.5))
 
 
 def _box_f(a, r):
@@ -316,7 +316,6 @@ class DepthUI(tk.Tk):
                 win.state("zoomed")
 
         top.bind("<Double-Button-1>", toggle_maximize)
-        win.bind("<Escape>", lambda _e: win.destroy())
 
         canvas = tk.Canvas(win, bg="#1e1e1e", highlightthickness=0)
         scroll = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
@@ -352,6 +351,17 @@ class DepthUI(tk.Tk):
         tiles = []
         tile_refs = {}
         load_gen = [0]
+
+        def close_browser():
+            load_gen[0] = 0
+            tile_refs.clear()
+            win.unbind_all("<MouseWheel>")
+            win.unbind_all("<Button-4>")
+            win.unbind_all("<Button-5>")
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", close_browser)
+        win.bind("<Escape>", lambda _e: close_browser())
 
         def relayout(*_a):
             cols = max(1, canvas.winfo_width() // 170)
@@ -419,15 +429,26 @@ class DepthUI(tk.Tk):
             return
         lbl = tile_refs[path]
         try:
+            if not lbl.winfo_exists():
+                return
             photo = ImageTk.PhotoImage(im)
         except Exception:
             return
         self._browse_cache[path] = photo
-        lbl.configure(image=photo, text="", width=0, height=0)
+        try:
+            lbl.configure(image=photo, text="", width=0, height=0)
+        except tk.TclError:
+            return
         lbl.image = photo
 
     def _pick_photo(self, path, win):
         self.var_src.set(path)
+        try:
+            win.master.unbind_all("<MouseWheel>")
+            win.master.unbind_all("<Button-4>")
+            win.master.unbind_all("<Button-5>")
+        except Exception:
+            pass
         win.destroy()
         self.lbl_status.configure(text=f"Фото выбрано: {path.split('/')[-1]}")
 
@@ -548,7 +569,7 @@ class DepthUI(tk.Tk):
             d = pred[0].astype(np.float32)
             d = d - d.min()
             d = d / (d.max() + 1e-8)
-            dfull = np.asarray(Image.fromarray(d, mode="F").resize(img.size, Image.BICUBIC), dtype=np.float32)
+            dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
             if g_strength > 0:
                 guide = np.asarray(img.convert("L"), dtype=np.float32) / 255.0
@@ -556,7 +577,7 @@ class DepthUI(tk.Tk):
                 dfull = guided_filter(guide, dfull, radius)
                 mn, mx = float(dfull.min()), float(dfull.max())
                 dfull = (dfull - mn) / (mx - mn + 1e-8)
-            depth = Image.fromarray((np.clip(dfull, 0.0, 1.0) * 255).astype(np.uint8), "L")
+            depth = Image.fromarray((np.clip(dfull, 0.0, 1.0) * 255).astype(np.uint8))
             depth = ImageOps.autocontrast(depth)
             depth = depth.filter(ImageFilter.UnsharpMask(
                 radius=max(1, int(c["unsharp_radius"])), percent=int(c["unsharp_percent"]), threshold=int(c["unsharp_thresh"])))
@@ -596,7 +617,7 @@ class DepthUI(tk.Tk):
                 sharp = np.clip(1 - np.abs(L - d0) / fw, 0, 1)
                 sharp = sharp * sharp * (3 - 2 * sharp)
                 rel_map = 1 - sharp
-                far = Image.fromarray((rel_map * 255).astype(np.uint8), "L")
+                far = Image.fromarray((rel_map * 255).astype(np.uint8))
                 dof = Image.composite(depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 8)), depth_out, far)
             else:
                 blurred = depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 3))
