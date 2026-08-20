@@ -23,7 +23,7 @@ if [ ! -x ".venv/bin/python" ]; then
     python3 -m venv .venv
 fi
 .venv/bin/pip install --upgrade pip >/dev/null
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install --only-binary=:all: -r requirements.txt
 
 # 3. модель
 echo "[3/4] Проверка модели..."
