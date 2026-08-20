@@ -33,6 +33,7 @@ DEFAULTS = {
     "focus_width": 25.0,
     "depth16": False,
     "src_max": 0,
+    "guided": 45.0,
 }
 
 cfg = DEFAULTS.copy()
@@ -89,6 +90,37 @@ def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
     return Image.fromarray((shade * 255).astype(np.uint8), "L").filter(ImageFilter.GaussianBlur(r * 0.5))
 
 
+def _box_f(a, r):
+    ri = max(0, int(round(r)))
+    a = np.ascontiguousarray(a, dtype=np.float64)
+    if ri == 0:
+        return a.astype(np.float32)
+    h, w = a.shape
+    ii = np.zeros((h + 1, w + 1), dtype=np.float64)
+    ii[1:, 1:] = np.cumsum(np.cumsum(a, axis=0), axis=1)
+    ys = np.arange(h)
+    xs = np.arange(w)
+    y0 = np.clip(ys - ri, 0, h)
+    y1 = np.clip(ys + ri + 1, 0, h)
+    x0 = np.clip(xs - ri, 0, w)
+    x1 = np.clip(xs + ri + 1, 0, w)
+    s = ii[y1][:, x1] - ii[y0][:, x1] - ii[y1][:, x0] + ii[y0][:, x0]
+    area = (y1 - y0)[:, None].astype(np.float64) * (x1 - x0)[None, :]
+    return (s / area).astype(np.float32)
+
+
+def guided_filter(guide, src, radius, eps=0.01):
+    mean_i = _box_f(guide, radius)
+    mean_p = _box_f(src, radius)
+    corr_ip = _box_f(guide * src, radius)
+    corr_ii = _box_f(guide * guide, radius)
+    var_i = corr_ii - mean_i * mean_i
+    cov_ip = corr_ip - mean_i * mean_p
+    a = cov_ip / (var_i + eps)
+    b = mean_p - a * mean_i
+    return _box_f(a, radius) * guide + _box_f(b, radius)
+
+
 class DepthUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -133,6 +165,7 @@ class DepthUI(tk.Tk):
         slider("Unsharp порог", "unsharp_thresh", 0, 10, lambda v: f"{v:.1f}", 2, 0)
         slider("Ширина фокуса", "focus_width", 5, 100, lambda v: f"{v:.0f}", 2, 1)
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
+        slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 4, 0)
 
         # --- разрешение входа ---
         row = ttk.Frame(self)
@@ -512,10 +545,18 @@ class DepthUI(tk.Tk):
             arr = arr.transpose(2, 0, 1)[None]
             name = sess.get_inputs()[0].name
             pred = sess.run(None, {name: arr})[0]
-            d = pred[0]
+            d = pred[0].astype(np.float32)
             d = d - d.min()
             d = d / (d.max() + 1e-8)
-            depth = Image.fromarray((d * 255).astype(np.uint8)).resize(img.size, Image.BILINEAR)
+            dfull = np.asarray(Image.fromarray(d, mode="F").resize(img.size, Image.BICUBIC), dtype=np.float32)
+            g_strength = float(c.get("guided", 0) or 0)
+            if g_strength > 0:
+                guide = np.asarray(img.convert("L"), dtype=np.float32) / 255.0
+                radius = max(1.0, g_strength * 0.2)
+                dfull = guided_filter(guide, dfull, radius)
+                mn, mx = float(dfull.min()), float(dfull.max())
+                dfull = (dfull - mn) / (mx - mn + 1e-8)
+            depth = Image.fromarray((np.clip(dfull, 0.0, 1.0) * 255).astype(np.uint8), "L")
             depth = ImageOps.autocontrast(depth)
             depth = depth.filter(ImageFilter.UnsharpMask(
                 radius=max(1, int(c["unsharp_radius"])), percent=int(c["unsharp_percent"]), threshold=int(c["unsharp_thresh"])))
@@ -538,7 +579,7 @@ class DepthUI(tk.Tk):
 
             depth_out.save(f"{OUT}/photo_depth.png")
             if c["depth16"]:
-                df = d.copy()
+                df = dfull.copy()
                 if c["depth_contrast"] != 1.0:
                     df = (df - 0.5) * c["depth_contrast"] + 0.5
                 if c["invert"]:
