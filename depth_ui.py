@@ -585,41 +585,44 @@ class DepthUI(tk.Tk):
                 dfull = guided_filter(guide, dfull, radius)
                 mn, mx = float(dfull.min()), float(dfull.max())
                 dfull = (dfull - mn) / (mx - mn + 1e-8)
-            depth = Image.fromarray((np.clip(dfull, 0.0, 1.0) * 255).astype(np.uint8))
-            depth = ImageOps.autocontrast(depth)
-            depth = depth.filter(ImageFilter.UnsharpMask(
-                radius=max(1, int(c["unsharp_radius"])), percent=int(c["unsharp_percent"]), threshold=int(c["unsharp_thresh"])))
-            depth = ImageOps.autocontrast(depth)
+            dfloat = np.clip(dfull, 0.0, 1.0)
+            mn, mx = float(dfloat.min()), float(dfloat.max())
+            dfloat = (dfloat - mn) / (mx - mn + 1e-8)
+            ur = max(1, int(c["unsharp_radius"]))
+            upct = float(c["unsharp_percent"]) / 100.0
+            uthr = int(c["unsharp_thresh"]) / 255.0
+            ub = _blur_f(dfloat, ur)
+            ud = dfloat - ub
+            dfloat = np.clip(dfloat + ud * upct * (np.abs(ud) > uthr), 0.0, 1.0)
+            mn, mx = float(dfloat.min()), float(dfloat.max())
+            dfloat = (dfloat - mn) / (mx - mn + 1e-8)
             if c["depth_contrast"] != 1.0:
-                depth = ImageEnhance.Contrast(depth).enhance(c["depth_contrast"])
-
+                dmean = float(dfloat.mean())
+                dfloat = np.clip((dfloat - dmean) * float(c["depth_contrast"]) + dmean, 0.0, 1.0)
             if c["invert"]:
-                depth = depth.point(lambda p: 255 - p)
+                dfloat = 1.0 - dfloat
 
             out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
             w, h = [int(x) for x in out_size.split("x")]
-            depth_out = depth.convert("RGB").resize((w, h), Image.LANCZOS)
+            dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
+
+            depth_out = Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB")
             img_out = img.convert("RGB").resize((w, h), Image.LANCZOS)
 
             scale_ratio = max(w, h) / max(1, max(int(c["in_w"]) - int(c["in_w"]) % 14, int(c["in_h"]) - int(c["in_h"]) % 14))
             smooth = min(3.0, max(0.0, (scale_ratio - 1) * 0.35))
             if smooth > 0:
                 depth_out = depth_out.filter(ImageFilter.GaussianBlur(smooth))
+                dfloat = _blur_f(dfloat, smooth)
 
             depth_out.save(f"{OUT}/photo_depth.png")
             if c["depth16"]:
-                df = dfull.copy()
-                if c["depth_contrast"] != 1.0:
-                    df = (df - 0.5) * c["depth_contrast"] + 0.5
-                if c["invert"]:
-                    df = 1 - df
-                df = np.clip(df, 0, 1)
-                Image.fromarray((df * 65535).astype(np.uint16)).resize((w, h), Image.LANCZOS).save(f"{OUT}/photo_depth_16.png")
+                Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
             rel_map = None
             dfl = None
-            dl = np.asarray(depth_out.convert("L"), dtype=np.float32) / 255.0
+            dl = np.clip(dfloat, 0.0, 1.0)
             if c["focus_enable"] and c["focus_x"] >= 0 and c["focus_y"] >= 0:
                 d0 = float(dl[int(c["focus_y"]) % dl.shape[0], int(c["focus_x"]) % dl.shape[1]])
                 fw = max(1.0, float(c["focus_width"])) / 255.0
