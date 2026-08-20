@@ -32,6 +32,7 @@ DEFAULTS = {
     "focus_y": -1,
     "focus_width": 25.0,
     "depth16": False,
+    "depth32": False,
     "src_max": 0,
     "guided": 45.0,
 }
@@ -213,6 +214,8 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
         self.vars["depth16"] = tk.BooleanVar(value=bool(cfg.get("depth16", False)))
         ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
+        self.vars["depth32"] = tk.BooleanVar(value=bool(cfg.get("depth32", False)))
+        ttk.Checkbutton(row, text="32-бит float (TIFF)", variable=self.vars["depth32"]).pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -534,6 +537,7 @@ class DepthUI(tk.Tk):
         c["invert"] = bool(self.vars["invert"].get())
         c["dof_near"] = bool(self.vars["dof_near"].get())
         c["depth16"] = bool(self.vars["depth16"].get())
+        c["depth32"] = bool(self.vars["depth32"].get())
         c["focus_enable"] = bool(self.vars["focus_enable"].get())
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
@@ -617,6 +621,9 @@ class DepthUI(tk.Tk):
             depth_out.save(f"{OUT}/photo_depth.png")
             if c["depth16"]:
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
+            if c.get("depth32"):
+                Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
+            deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
             rel_map = None
@@ -630,7 +637,7 @@ class DepthUI(tk.Tk):
                 rel_map = 1 - sharp
                 far = Image.fromarray((rel_map * 255).astype(np.uint8))
                 dof = Image.composite(depth_out.filter(ImageFilter.GaussianBlur(c["blur_strength"] * 8)), depth_out, far)
-                if c.get("depth16"):
+                if deep:
                     b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 8))
                     dfl = b * rel_map + dl * (1 - rel_map)
             else:
@@ -639,18 +646,20 @@ class DepthUI(tk.Tk):
                 if c["dof_near"]:
                     dof = Image.composite(depth_out, blurred, far)
                     rel_map = dl
-                    if c.get("depth16"):
+                    if deep:
                         b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 3))
                         dfl = dl * rel_map + b * (1 - rel_map)
                 else:
                     dof = Image.composite(blurred, depth_out, far)
-                    if c.get("depth16"):
+                    if deep:
                         m = 1.0 - dl
                         b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 3))
                         dfl = b * m + dl * (1 - m)
             dof.save(f"{OUT}/photo_dof.png")
             if dfl is not None:
                 Image.fromarray((np.clip(dfl, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_dof_16.png")
+                if c.get("depth32"):
+                    Image.fromarray(np.clip(dfl, 0.0, 1.0)).save(f"{OUT}/photo_dof_32.tif")
 
             a = img_out
             b = depth_out
