@@ -203,8 +203,8 @@ def write_exr(path, img):
             f.write(ch)
 
 
-def _exr_thumb(path, max_side=150):
-    # превью для несжатых scanline-EXR (формат этого инструмента); иначе None
+def _exr_load_rgb(path):
+    # полное чтение несжатых scanline-EXR (формат этого инструмента) -> PIL RGB; иначе None
     try:
         import struct as _st
         d = open(path, "rb").read()
@@ -250,11 +250,17 @@ def _exr_thumb(path, max_side=150):
         srgb = np.where(lin <= 0.0031308, lin*12.92,
                         1.055*np.power(np.clip(lin, 1e-8, None), 1/2.4) - 0.055)
         from PIL import Image as _I
-        out = _I.fromarray((np.clip(srgb, 0.0, 1.0)*255).astype(np.uint8))
-        out.thumbnail((max_side, max_side), _I.BILINEAR)
-        return out.convert("RGB")
+        return _I.fromarray((np.clip(srgb, 0.0, 1.0)*255).astype(np.uint8)).convert("RGB")
     except Exception:
         return None
+
+
+def _exr_thumb(path, max_side=150):
+    im = _exr_load_rgb(path)
+    if im is None:
+        return None
+    im.thumbnail((max_side, max_side), Image.BILINEAR)
+    return im
 
 
 def png_write_rgb16(path, rgb01):
@@ -597,27 +603,49 @@ class DepthUI(tk.Tk):
         canvas.bind("<Configure>", relayout)
 
         def load_thumbs(paths):
+            import hashlib
+            cdir = os.path.join(common.data_dir(), ".thumbs")
+            try:
+                os.makedirs(cdir, exist_ok=True)
+            except Exception:
+                cdir = None
             for path in paths:
                 if load_gen[0] == 0 or path not in tile_refs:
                     return
                 low = path.lower()
                 im = None
-                try:
-                    im = Image.open(path)
-                    if low.endswith((".jpg", ".jpeg")):
-                        im.draft("RGB", (300, 300))
-                    im.thumbnail((150, 150), Image.BILINEAR)
-                    im = im.convert("RGB")
-                except Exception:
-                    im = None
-                if im is None and low.endswith(".exr"):
-                    im = _exr_thumb(path)
+                cp = None
+                if cdir:
+                    try:
+                        key = hashlib.md5(f"{path}|{os.path.getmtime(path)}".encode()).hexdigest()[:16]
+                        cp = os.path.join(cdir, key + ".png")
+                        if os.path.exists(cp):
+                            im = Image.open(cp).convert("RGB")
+                    except Exception:
+                        cp = im = None
                 if im is None:
-                    im = Image.new("RGB", (140, 100), (38, 38, 38))
+                    try:
+                        im = Image.open(path)
+                        if low.endswith((".jpg", ".jpeg")):
+                            im.draft("RGB", (300, 300))
+                        im.thumbnail((150, 150), Image.BILINEAR)
+                        im = im.convert("RGB")
+                    except Exception:
+                        im = None
+                    if im is None and low.endswith(".exr"):
+                        im = _exr_thumb(path)
+                    if im is None:
+                        im = Image.new("RGB", (140, 100), (38, 38, 38))
+                    elif cp:
+                        try:
+                            im.save(cp)
+                        except Exception:
+                            pass
                 self.after(0, lambda p=path, im=im: self._set_thumb(p, im, tile_refs, load_gen))
 
         def refresh(*_a):
             load_gen[0] += 1
+            gen = load_gen[0]
             for w in inner.winfo_children():
                 w.destroy()
             tiles.clear()
@@ -629,15 +657,18 @@ class DepthUI(tk.Tk):
             except Exception:
                 files = []
             exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".exr", ".tif", ".tiff")
-            paths = []
-            for i, name in enumerate(files):
-                if len(paths) >= 300:
+            all_paths = []
+            for name in files:
+                if len(all_paths) >= 300:
                     break
                 if not name.lower().endswith(exts):
                     continue
                 if q and q not in name.lower():
                     continue
-                path = os.path.join(folder, name)
+                all_paths.append(os.path.join(folder, name))
+
+            def add_tile(path):
+                name = os.path.basename(path)
                 tile = ttk.Frame(inner, padding=4)
                 lbl = tk.Label(tile, text="…", bg="#2a2a2a", fg="#666", cursor="hand2", width=20, height=10)
                 lbl.pack()
@@ -652,9 +683,21 @@ class DepthUI(tk.Tk):
                 lbln.bind("<B2-Motion>", mid_move)
                 tiles.append(tile)
                 tile_refs[path] = lbl
-                paths.append(path)
-            win.after_idle(relayout)
-            threading.Thread(target=load_thumbs, args=(paths,), daemon=True).start()
+
+            def build_batch():
+                nonlocal all_paths
+                if load_gen[0] != gen:
+                    return
+                batch, all_paths = all_paths[:40], all_paths[40:]
+                for path in batch:
+                    add_tile(path)
+                relayout()
+                if all_paths:
+                    win.after(1, build_batch)
+                else:
+                    threading.Thread(target=load_thumbs, args=(list(tile_refs),), daemon=True).start()
+
+            win.after_idle(build_batch)
 
         var_fold.trace_add("write", refresh)
         var_search.trace_add("write", refresh)
@@ -739,7 +782,12 @@ class DepthUI(tk.Tk):
         c["model"] = self.vars["model"].get().lower()
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
-        src_img = Image.open(c["src"]).convert("RGB")
+        if str(c["src"]).lower().endswith(".exr"):
+            src_img = _exr_load_rgb(c["src"])
+            if src_img is None:
+                raise ValueError(f"Не удалось прочитать EXR: {c['src']}")
+        else:
+            src_img = Image.open(c["src"]).convert("RGB")
         div = int("".join(ch for ch in str(self.vars["src_max"].get()) if ch.isdigit()) or 1)
         c["src_div"] = div
         if div > 1:
@@ -788,7 +836,12 @@ class DepthUI(tk.Tk):
                     text=f"Скачивание модели {c['model'].capitalize()}..."))
                 download_model(c["model"], model)
                 self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
-            img = Image.open(c["src"]).convert("RGB")
+            if str(c["src"]).lower().endswith(".exr"):
+                img = _exr_load_rgb(c["src"])
+                if img is None:
+                    raise ValueError(f"Не удалось прочитать EXR: {c['src']}")
+            else:
+                img = Image.open(c["src"]).convert("RGB")
             div = int("".join(ch for ch in str(c.get("src_div", 1)) if ch.isdigit()) or 1)
             if div > 1:
                 img = img.resize((max(1, img.width // div), max(1, img.height // div)), Image.LANCZOS)
