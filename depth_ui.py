@@ -57,6 +57,30 @@ def open_path(path):
         pass
 
 
+def avail_ram_mb():
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                            ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+            st = MEMORYSTATUSEX()
+            st.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(st))
+            return int(st.ullAvailPhys // (1024 * 1024))
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        return None
+    return None
+
+
 def colormap_rgb(t):
     stops = [
         (0.0, (0.0, 0.0, 0.5)),
@@ -585,6 +609,13 @@ class DepthUI(tk.Tk):
             sess = ort.InferenceSession(model, providers=["CPUExecutionProvider"])
             nw = int(c["in_w"]) - int(c["in_w"]) % 14
             nh = int(c["in_h"]) - int(c["in_h"]) % 14
+            tokens = (nw // 14) * (nh // 14)
+            est_mb = int(tokens * tokens * 0.0011) + 512
+            av = avail_ram_mb()
+            if av is not None and est_mb > av * 0.85:
+                raise MemoryError(
+                    f"Недостаточно ОЗУ: нужно ~{est_mb / 1024:.1f} ГБ, доступно {av / 1024:.1f} ГБ.\n"
+                    "Уменьшите «Разрешение входа» или включите «Сжать оригинал до».")
             inp = img.resize((nw, nh), Image.LANCZOS)
             arr = np.asarray(inp, dtype=np.float32) / 255.0
             arr = (arr - np.array([0.485, 0.456, 0.406], np.float32)) / np.array([0.229, 0.224, 0.225], np.float32)
