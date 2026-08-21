@@ -285,9 +285,12 @@ class DepthUI(tk.Tk):
         row = ttk.Frame(self)
         row.pack(fill="x")
         ttk.Label(row, text="Размер выхода:").pack(side="left", **pad)
-        self.vars["out_mult"] = tk.StringVar(value=str(cfg.get("out_mult", "1")))
+        _om = str(cfg.get("out_mult", "2x"))
+        if _om not in ("2x", "3x", "4x"):
+            _om = "2x"
+        self.vars["out_mult"] = tk.StringVar(value=_om)
         cmb = ttk.Combobox(row, textvariable=self.vars["out_mult"],
-                           values=["1x", "2x", "3x", "4x"], width=8, state="readonly")
+                           values=["2x", "3x", "4x"], width=8, state="readonly")
         cmb.pack(side="left", padx=10, pady=4)
 
         # --- кнопки ---
@@ -576,12 +579,12 @@ class DepthUI(tk.Tk):
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         src_img = Image.open(c["src"]).convert("RGB")
-        orig_w, orig_h = src_img.width, src_img.height
         max_side = int("".join(ch for ch in str(self.vars["src_max"].get()) if ch.isdigit()) or 0)
         c["src_max"] = max_side
         if max_side and max(src_img.width, src_img.height) > max_side:
             s = max_side / max(src_img.width, src_img.height)
             src_img = src_img.resize((max(1, int(src_img.width * s)), max(1, int(src_img.height * s))), Image.LANCZOS)
+        orig_w, orig_h = src_img.width, src_img.height
         if self.vars["compress"].get():
             scale = (200 * mult) / max(src_img.width, src_img.height)
             c["in_w"] = max(14, int(src_img.width * scale))
