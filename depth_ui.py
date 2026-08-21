@@ -18,6 +18,8 @@ DEFAULTS = {
     "model": "small",
     "input_size": 1024,
     "depth_gamma": 1.0,
+    "depth_lo": 0.0,
+    "depth_hi": 100.0,
     "depth_contrast": 1.0,
     "overlay_alpha": 0.45,
     "blur_strength": 6.0,
@@ -228,9 +230,11 @@ class DepthUI(tk.Tk):
             lbl.pack(side="left")
             self.vars[key] = var
 
+        slider("Глубина от %", "depth_lo", 0, 90, lambda v: f"{v:.0f}", 0, 0)
         slider("Оверлей", "overlay_alpha", 0, 1, lambda v: f"{v:.2f}", 0, 1)
+        slider("Глубина до %", "depth_hi", 10, 100, lambda v: f"{v:.0f}", 1, 0)
         slider("Размытие DoF", "blur_strength", 0, 20, lambda v: f"{v:.1f}", 1, 1)
-        slider("Расстояние глубины", "depth_gamma", 0.2, 5.0, lambda v: f"{v:.2f}", 2, 0)
+        slider("Гамма глубины", "depth_gamma", 0.2, 5.0, lambda v: f"{v:.2f}", 2, 0)
         slider("Ширина фокуса", "focus_width", 5, 100, lambda v: f"{v:.0f}", 2, 1)
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
         slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 4, 0)
@@ -299,7 +303,7 @@ class DepthUI(tk.Tk):
         self.btn_run = ttk.Button(row, text="▶ Применить", command=self.run)
         self.btn_run.pack(side="left", padx=10)
         ttk.Button(row, text="Открыть папку", command=self.open_folder).pack(side="left", padx=10)
-        self.var_autobig = tk.BooleanVar(value=True)
+        self.var_autobig = None
         self.lbl_status = ttk.Label(row, text="Готово. Нажми Применить")
         self.lbl_status.pack(side="left", padx=10)
 
@@ -692,9 +696,13 @@ class DepthUI(tk.Tk):
                 dfloat = np.clip((dfloat - dmean) * float(c["depth_contrast"]) + dmean, 0.0, 1.0)
             if c["invert"]:
                 dfloat = 1.0 - dfloat
+            lo = float(c.get("depth_lo", 0.0) or 0.0) / 100.0
+            hi = float(c.get("depth_hi", 100.0) or 100.0) / 100.0
+            if hi > lo + 1e-6:
+                dfloat = np.clip((dfloat - lo) / (hi - lo), 0.0, 1.0)
             g = float(c.get("depth_gamma", 1.0) or 1.0)
             if g != 1.0:
-                dfloat = np.clip(dfloat, 0.0, 1.0) ** g
+                dfloat = np.clip(dfloat, 0.0, 1.0) ** (1.0 / g)
 
             out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
             w, h = [int(x) for x in out_size.split("x")]
@@ -828,8 +836,6 @@ class DepthUI(tk.Tk):
         self._cur_rel = rel.copy()
         self._src_img = src.copy()
         self.show_pair()
-        if self.var_autobig.get():
-            self.show_large(1, auto=True)
 
     def show_large(self, side_idx, auto=False):
         img = self._all_images()[side_idx]
