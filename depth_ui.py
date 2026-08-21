@@ -445,7 +445,7 @@ class DepthUI(tk.Tk):
         self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
         ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
         self.vars["render2"] = tk.BooleanVar(value=bool(cfg.get("render2", False)))
-        ttk.Checkbutton(row, text="Второй рендер (от готовой карты)",
+        ttk.Checkbutton(row, text="Второй рендер (гибрид с первым)",
                         variable=self.vars["render2"]).pack(side="left", padx=10, pady=4)
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
@@ -1025,6 +1025,16 @@ class DepthUI(tk.Tk):
             side.save(f"{OUT}/photo_color_plus_depth.png")
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
+            hp = getattr(self, "_hybrid_prev", None)
+            if hp is not None and c.get("hybrid") and hp.get("rgb") is not None:
+                rgb1 = hp["rgb"]
+                if rgb1.shape[:2] != crgb.shape[:2]:
+                    rgb1 = np.asarray(Image.fromarray(
+                        (rgb1 * 255).astype(np.uint8)).resize((w, h), Image.LANCZOS),
+                        dtype=np.float32) / 255.0
+                # гибрид: цвета первого + второго рендера вместе
+                crgb = np.clip(crgb * 0.5 + rgb1 * 0.5, 0.0, 1.0)
+                self._hybrid_prev = None
             Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap.png")
             if c["depth16"]:
                 png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
@@ -1037,12 +1047,26 @@ class DepthUI(tk.Tk):
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
-                # второй проход: свежая цветная карта сама становится источником
+                # второй проход: свежая цветная карта сама становится источником;
+                # результат гибридизируется с первым (50/50)
+                self._hybrid_prev = {
+                    "a": np.clip(dfloat, 0.0, 1.0).astype(np.float32),
+                    "rgb": np.clip(crgb, 0.0, 1.0).astype(np.float32),
+                    "size": (w, h),
+                }
                 c2 = dict(c)
                 c2["src"] = f"{OUT}/photo_colormap.exr"
                 c2["render2"] = False
+                c2["hybrid"] = True
                 self.after(0, lambda: self.lbl_status.configure(text="Рендер 1/2 готов, считаю второй…"))
                 return self.work(c2)
+
+            hp = getattr(self, "_hybrid_prev", None)
+            if hp is not None and c.get("hybrid"):
+                a1 = hp["a"]
+                if a1.shape != dfloat.shape:
+                    a1 = np.asarray(Image.fromarray(a1).resize((w, h), Image.LANCZOS), dtype=np.float32)
+                dfloat = np.clip(dfloat * 0.5 + a1 * 0.5, 0.0, 1.0)
 
             depth_p = depth_out.copy()
             overlay_p = overlay.copy()
