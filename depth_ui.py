@@ -613,7 +613,7 @@ class DepthUI(tk.Tk):
             tokens = (nw // 14) * (nh // 14)
             est_mb = int(tokens * tokens * 0.0011) + 512
             av = avail_ram_mb()
-            if av is not None and est_mb > av * 0.7:
+            if av is not None and est_mb > av * 0.9:
                 raise MemoryError(
                     f"Недостаточно ОЗУ: нужно ~{est_mb / 1024:.1f} ГБ, доступно {av / 1024:.1f} ГБ.\n"
                     "Уменьшите «Разрешение входа» или включите «Сжать оригинал до».")
