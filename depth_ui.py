@@ -19,6 +19,8 @@ DEFAULTS = {
     "depth_gamma": 1.0,
     "depth_lo": 0.0,
     "depth_hi": 100.0,
+    "near_m": 1.0,
+    "far_m": 30.0,
     "depth_contrast": 1.0,
     "overlay_alpha": 0.45,
     "blur_strength": 6.0,
@@ -150,9 +152,9 @@ def colormap_rgb(t):
     return np.stack([r, g, b], axis=-1)
 
 
-def write_exr(path, img01):
+def write_exr(path, img):
     import struct as _s
-    a = np.clip(np.asarray(img01, dtype=np.float32), 0.0, 1.0)
+    a = np.nan_to_num(np.asarray(img, dtype=np.float32), nan=0.0)
     if a.ndim == 2:
         a = np.stack([a, a, a], axis=-1)
     h, w = a.shape[:2]
@@ -322,6 +324,17 @@ class DepthUI(tk.Tk):
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
         slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 4, 0)
         slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}", 4, 1)
+
+        # --- реальные метры для EXR/TIFF32 ---
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        ttk.Label(row, text="Расстояние, м:", width=15).pack(side="left", **pad)
+        self.vars["near_m"] = tk.StringVar(value=str(cfg.get("near_m", 1.0)))
+        self.vars["far_m"] = tk.StringVar(value=str(cfg.get("far_m", 30.0)))
+        ttk.Entry(row, width=7, textvariable=self.vars["near_m"]).pack(side="left", padx=(10, 2))
+        ttk.Label(row, text="—").pack(side="left")
+        ttk.Entry(row, width=7, textvariable=self.vars["far_m"]).pack(side="left", padx=2)
+        ttk.Label(row, text="ближнее — дальнее (для EXR и TIFF32)").pack(side="left", padx=8)
 
         # --- разрешение входа ---
         row = ttk.Frame(self)
@@ -798,12 +811,28 @@ class DepthUI(tk.Tk):
                 dfloat = _blur_f(dfloat, smooth)
 
             depth_out.save(f"{OUT}/photo_depth.png")
+
+            def _parse_m(v):
+                try:
+                    return float(str(v).replace(",", "."))
+                except Exception:
+                    return None
+            near_m = _parse_m(c.get("near_m"))
+            far_m = _parse_m(c.get("far_m"))
+            if near_m is not None and far_m is not None and far_m > near_m:
+                dmetric = (near_m + (1.0 - np.clip(dfloat, 0.0, 1.0)) * (far_m - near_m)).astype(np.float32)
+            else:
+                dmetric = None
+
             if c["depth16"]:
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
             if c.get("depth32"):
-                Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
+                if dmetric is not None:
+                    Image.fromarray(dmetric).save(f"{OUT}/photo_depth_32.tif")
+                else:
+                    Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
             if c.get("depth_exr"):
-                write_exr(f"{OUT}/photo_depth.exr", dfloat)
+                write_exr(f"{OUT}/photo_depth.exr", dmetric if dmetric is not None else dfloat)
             deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
