@@ -554,6 +554,7 @@ class DepthUI(tk.Tk):
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         src_img = Image.open(c["src"]).convert("RGB")
+        orig_w, orig_h = src_img.width, src_img.height
         max_side = int("".join(ch for ch in str(self.vars["src_max"].get()) if ch.isdigit()) or 0)
         c["src_max"] = max_side
         if max_side and max(src_img.width, src_img.height) > max_side:
@@ -568,7 +569,7 @@ class DepthUI(tk.Tk):
             c["in_w"] = max(256, mult * src_img.width)
             c["in_h"] = max(256, mult * src_img.height)
             out_mult = int(self.vars["out_mult"].get().replace("x", ""))
-            c["out_size"] = f"{out_mult * src_img.width}x{out_mult * src_img.height}"
+            c["out_size"] = f"{out_mult * orig_w}x{out_mult * orig_h}"
         for k, var in self.vars.items():
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
