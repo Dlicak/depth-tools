@@ -24,6 +24,9 @@ DEFAULTS = {
     "blur_strength": 6.0,
     "out_size": "300x300",
     "invert": False,
+    "merge_maps": False,
+    "merge_src": "",
+    "merge_k": 50,
     "dof_near": False,
     "compress": False,
     "focus_enable": False,
@@ -431,6 +434,18 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
         ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
+        self.vars["merge_maps"] = tk.BooleanVar(value=bool(cfg.get("merge_maps", False)))
+        ttk.Checkbutton(row, text="Объединить с картой:", variable=self.vars["merge_maps"]).pack(side="left", padx=10, pady=4)
+        self.vars["merge_src"] = tk.StringVar(value=str(cfg.get("merge_src", "")))
+        ttk.Entry(row, textvariable=self.vars["merge_src"], width=22).pack(side="left", padx=(0, 4), pady=4)
+        ttk.Button(row, text="…", width=3, command=self._pick_merge).pack(side="left")
+        self.vars["merge_k"] = tk.DoubleVar(value=float(cfg.get("merge_k", 50)))
+        ttk.Label(row, text="Сила второй:").pack(side="left", padx=(10, 2))
+        ttk.Scale(row, from_=0, to=100, variable=self.vars["merge_k"], length=90).pack(side="left")
+        self._merge_lbl = ttk.Label(row, text=f"{float(cfg.get('merge_k', 50)):.0f}%")
+        self._merge_lbl.pack(side="left")
+        self.vars["merge_k"].trace_add("write", lambda *_a: self._merge_lbl.configure(
+            text=f"{float(self.vars['merge_k'].get()):.0f}%"))
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
         self.vars["depth16"] = tk.BooleanVar(value=bool(cfg.get("depth16", False)))
@@ -541,6 +556,21 @@ class DepthUI(tk.Tk):
         if f:
             self.var_src.set(f)
             self.lbl_status.configure(text=f"Фото выбрано: {os.path.basename(f)}")
+
+    def _pick_merge(self):
+        import subprocess
+        cmd = ["zenity", "--file-selection", "--title=Вторая карта глубины",
+               "--file-filter=Карты глубины | *.png *.tif *.tiff *.exr",
+               "--file-filter=Все файлы | *"]
+        cur = self.vars["merge_src"].get().strip()
+        if cur and os.path.isfile(cur):
+            cmd.append(f"--filename={cur}")
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if r.returncode == 0 and r.stdout.strip():
+                self.vars["merge_src"].set(r.stdout.strip())
+        except Exception:
+            pass
 
     def browse_photos(self):
         win = tk.Toplevel(self)
@@ -829,6 +859,9 @@ class DepthUI(tk.Tk):
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
         c["invert"] = bool(self.vars["invert"].get())
+        c["merge_maps"] = bool(self.vars["merge_maps"].get())
+        c["merge_src"] = str(self.vars["merge_src"].get())
+        c["merge_k"] = float(self.vars["merge_k"].get())
         c["dof_near"] = bool(self.vars["dof_near"].get())
         c["depth16"] = bool(self.vars["depth16"].get())
         c["depth32"] = bool(self.vars["depth32"].get())
@@ -941,6 +974,22 @@ class DepthUI(tk.Tk):
             out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
             w, h = [int(x) for x in out_size.split("x")]
             dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
+
+            if c.get("merge_maps") and str(c.get("merge_src") or "").strip():
+                p2 = str(c["merge_src"]).strip()
+                try:
+                    if p2.lower().endswith(".exr"):
+                        im2 = _exr_load_rgb(p2)
+                    else:
+                        im2 = Image.open(p2)
+                    if im2 is not None:
+                        a2 = np.asarray(im2.convert("L").resize((w, h), Image.LANCZOS), dtype=np.float32) / 255.0
+                        mn, mx = float(a2.min()), float(a2.max())
+                        a2 = (a2 - mn) / (mx - mn + 1e-8)
+                        k = min(1.0, max(0.0, float(c.get("merge_k", 50)) / 100.0))
+                        dfloat = np.clip(dfloat * (1.0 - k) + a2 * k, 0.0, 1.0)
+                except Exception:
+                    self.after(0, lambda: self.lbl_status.configure(text=f"Не удалось открыть вторую карту: {os.path.basename(p2)}"))
 
             depth_out = Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB")
             img_out = img.convert("RGB").resize((w, h), Image.LANCZOS)
