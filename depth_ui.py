@@ -33,6 +33,7 @@ DEFAULTS = {
     "focus_width": 25.0,
     "depth16": False,
     "depth32": False,
+    "depth_exr": False,
     "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
@@ -119,6 +120,46 @@ def colormap_rgb(t):
     g = np.interp(t, [s[0] for s in stops], [s[1][1] for s in stops])
     b = np.interp(t, [s[0] for s in stops], [s[1][2] for s in stops])
     return np.stack([r, g, b], axis=-1)
+
+
+def write_exr(path, img01):
+    import struct as _s
+    a = np.clip(np.asarray(img01, dtype=np.float32), 0.0, 1.0)
+    if a.ndim == 2:
+        a = np.stack([a, a, a], axis=-1)
+    h, w = a.shape[:2]
+
+    def attr(name, typ, data):
+        return name.encode() + b"\0" + typ.encode() + b"\0" + _s.pack("<i", len(data)) + data
+
+    chans = b""
+    for nm in ("B", "G", "R"):
+        chans += nm.encode() + b"\0" + _s.pack("<i", 1) + _s.pack("<B", 0) + b"\0\0\0" + _s.pack("<ii", 1, 1)
+    chans += b"\0"
+    hdr = b"\x76\x2f\x31\x01" + _s.pack("<I", 2)
+    hdr += attr("channels", "chlist", chans)
+    hdr += attr("compression", "compression", _s.pack("<B", 0))
+    hdr += attr("dataWindow", "box2i", _s.pack("<iiii", 0, 0, w - 1, h - 1))
+    hdr += attr("displayWindow", "box2i", _s.pack("<iiii", 0, 0, w - 1, h - 1))
+    hdr += attr("lineOrder", "lineOrder", _s.pack("<B", 0))
+    hdr += attr("pixelAspectRatio", "float", _s.pack("<f", 1.0))
+    hdr += attr("screenWindowCenter", "v2f", _s.pack("<ff", 0.0, 0.0))
+    hdr += attr("screenWindowWidth", "float", _s.pack("<f", 1.0))
+    hdr += b"\0"
+    rgb = np.stack([a[..., 2], a[..., 1], a[..., 0]], axis=-1).astype(np.float16)
+    rowbytes = w * 3 * 2
+    offsets = []
+    pos = len(hdr) + 8 * h
+    chunks = []
+    for y in range(h):
+        offsets.append(pos)
+        chunks.append(_s.pack("<ii", y, rowbytes) + rgb[y].tobytes())
+        pos += 8 + rowbytes
+    with open(path, "wb") as f:
+        f.write(hdr)
+        f.write(_s.pack("<" + "Q" * h, *offsets))
+        for ch in chunks:
+            f.write(ch)
 
 
 def png_write_rgb16(path, rgb01):
@@ -283,6 +324,8 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
         self.vars["depth32"] = tk.BooleanVar(value=bool(cfg.get("depth32", False)))
         ttk.Checkbutton(row, text="32-бит float (TIFF)", variable=self.vars["depth32"]).pack(side="left", padx=10, pady=4)
+        self.vars["depth_exr"] = tk.BooleanVar(value=bool(cfg.get("depth_exr", False)))
+        ttk.Checkbutton(row, text="EXR float", variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -303,6 +346,8 @@ class DepthUI(tk.Tk):
         self.btn_run = ttk.Button(row, text="▶ Применить", command=self.run)
         self.btn_run.pack(side="left", padx=10)
         ttk.Button(row, text="Открыть папку", command=self.open_folder).pack(side="left", padx=10)
+        ttk.Button(row, text="Открыть в Blender", command=self.open_in_blender).pack(side="left", padx=10)
+        ttk.Button(row, text="Рельеф 3D", command=self.show_relief).pack(side="left", padx=10)
         self.var_autobig = None
         self.lbl_status = ttk.Label(row, text="Готово. Нажми Применить")
         self.lbl_status.pack(side="left", padx=10)
@@ -604,6 +649,7 @@ class DepthUI(tk.Tk):
         c["dof_near"] = bool(self.vars["dof_near"].get())
         c["depth16"] = bool(self.vars["depth16"].get())
         c["depth32"] = bool(self.vars["depth32"].get())
+        c["depth_exr"] = bool(self.vars["depth_exr"].get())
         c["focus_enable"] = bool(self.vars["focus_enable"].get())
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
@@ -722,6 +768,8 @@ class DepthUI(tk.Tk):
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
             if c.get("depth32"):
                 Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
+            if c.get("depth_exr"):
+                write_exr(f"{OUT}/photo_depth.exr", dfloat)
             deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
@@ -932,6 +980,204 @@ class DepthUI(tk.Tk):
 
     def open_folder(self):
         open_path(OUT)
+
+    def _find_blender(self):
+        import shutil
+        exe = shutil.which("blender") or shutil.which("blender.exe")
+        if exe:
+            return exe
+        if os.name == "nt":
+            import glob
+            hits = glob.glob(r"C:\Program Files\Blender Foundation\Blender *\blender.exe")
+            if hits:
+                return sorted(hits)[-1]
+        return None
+
+    def open_in_blender(self):
+        import subprocess
+        cands = ["photo_depth_32.tif", "photo_depth.exr", "photo_depth_16.png", "photo_depth.png"]
+        depth = next((os.path.join(OUT, f) for f in cands if os.path.exists(os.path.join(OUT, f))), None)
+        if not depth:
+            self.lbl_status.configure(text="Сначала обработайте фото")
+            return
+        exe = self._find_blender()
+        if not exe:
+            self.lbl_status.configure(text="Blender не найден")
+            return
+        photo = self.var_src.get() if os.path.exists(self.var_src.get()) else ""
+        script = BLENDER_TEMPLATE.replace("@DEPTH@", depth).replace("@PHOTO@", photo)
+        p = os.path.join(OUT, "blender_relief.py")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(script)
+        try:
+            subprocess.Popen([exe, "--python", p])
+            self.lbl_status.configure(text="Blender запускается...")
+        except Exception as e:
+            self.lbl_status.configure(text=f"Не удалось запустить Blender: {e}")
+
+    def show_relief(self):
+        d = getattr(self, "_cur_rel", None)
+        col = getattr(self, "_cur_col", None)
+        if d is None or col is None:
+            self.lbl_status.configure(text="Сначала обработайте фото")
+            return
+        if getattr(self, "_relief_win", None) is not None and self._relief_win.winfo_exists():
+            self._relief_win.deiconify()
+            return
+        import math as _m
+
+        G = 90
+        gh = max(8, int(G * d.shape[0] / d.shape[1]))
+        dep = np.asarray(Image.fromarray(d).resize((G, gh), Image.BILINEAR), dtype=np.float32)
+        base = np.asarray(Image.fromarray(col).resize((G, gh), Image.BILINEAR), dtype=np.float32) / 255.0
+        hh, ww = dep.shape
+        xs = (np.arange(ww, dtype=np.float32) / (ww - 1) - 0.5) * ww
+        ys = (np.arange(hh, dtype=np.float32) / (hh - 1) - 0.5) * hh
+        Xg, Yg = np.meshgrid(xs, ys)
+        idx = np.arange(hh * ww, dtype=np.int32).reshape(hh, ww)
+        v0 = idx[:-1, :-1].ravel()
+        v1 = idx[1:, :-1].ravel()
+        v2 = idx[1:, 1:].ravel()
+        v3 = idx[:-1, 1:].ravel()
+        fbase = base[:-1, :-1].reshape(-1, 3)
+
+        win = tk.Toplevel(self)
+        win.title("Рельеф 3D — тяните мышью, колесо: зум")
+        win.configure(bg="#1e1e1e")
+        cv = tk.Canvas(win, width=680, height=480, bg="#101010", highlightthickness=0)
+        cv.pack(fill="both", expand=True)
+        ctl = ttk.Frame(win)
+        ctl.pack(fill="x")
+        ttk.Label(ctl, text="Высота:").pack(side="left", padx=6)
+        amp_var = tk.DoubleVar(value=0.35)
+        ttk.Scale(ctl, from_=0.05, to=1.5, variable=amp_var, orient="horizontal").pack(side="left", fill="x", expand=True, padx=6)
+
+        state = {"yaw": 0.65, "pitch": 0.55, "zoom": 9.0, "last": None}
+
+        def redraw():
+            state["last"] = None
+            amp = float(amp_var.get())
+            Z = (dep - 0.5) * amp * min(ww, hh)
+            P = np.stack([Xg.ravel(), Yg.ravel(), Z.ravel()], axis=1).astype(np.float32)
+            yaw, pitch, zoom = state["yaw"], state["pitch"], state["zoom"]
+            cy, sy = _m.cos(yaw), _m.sin(yaw)
+            cp, sp = _m.cos(pitch), _m.sin(pitch)
+            Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]], dtype=np.float32)
+            Rx = np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]], dtype=np.float32)
+            V = P @ Rz.T @ Rx.T
+            n = np.cross(V[v2] - V[v0], V[v3] - V[v1])
+            nl = np.linalg.norm(n, axis=1, keepdims=True) + 1e-9
+            n /= nl
+            L = np.array([-0.35, 0.45, 0.82], dtype=np.float32)
+            L /= np.linalg.norm(L)
+            lam = np.clip(n @ L, 0.0, 1.0)
+            shade = fbase * (0.30 + 0.70 * lam[:, None]) * 255
+            zc = V[[v0, v1, v2, v3], 2].mean(axis=0)
+            order = np.argsort(zc)[::-1]
+            sx = V[:, 0] * zoom + cv.winfo_width() / 2
+            syp = -V[:, 1] * zoom + cv.winfo_height() / 2
+            cv.delete("all")
+            cols = (shade.astype(np.int32).clip(0, 255))
+            for i in order:
+                r, g2, b = cols[i]
+                cv.create_polygon(sx[v0[i]], syp[v0[i]], sx[v1[i]], syp[v1[i]],
+                                  sx[v2[i]], syp[v2[i]], sx[v3[i]], syp[v3[i]],
+                                  fill=f"#{r:02x}{g2:02x}{b:02x}", outline="")
+
+        def on_move(e):
+            if state["last"] is not None:
+                dx, dy = e.x - state["last"][0], e.y - state["last"][1]
+                state["yaw"] += dx * 0.01
+                state["pitch"] = max(-1.4, min(1.4, state["pitch"] + dy * 0.01))
+            state["last"] = (e.x, e.y)
+            schedule()
+
+        def _do_redraw():
+            pending["id"] = None
+            redraw()
+
+        def schedule():
+            if pending["id"] is None:
+                pending["id"] = cv.after(33, _do_redraw)
+
+        def on_up(_e):
+            state["last"] = None
+
+        def on_wheel(e):
+            step = 1.1 if getattr(e, "delta", 0) > 0 or e.num == 4 else 1 / 1.1
+            state["zoom"] = max(2.0, min(40.0, state["zoom"] * step))
+            schedule()
+
+        pending = {"id": None}
+        cv.bind("<B1-Motion>", on_move)
+        cv.bind("<ButtonRelease-1>", on_up)
+        cv.bind("<MouseWheel>", on_wheel)
+        cv.bind("<Button-4>", on_wheel)
+        cv.bind("<Button-5>", on_wheel)
+        amp_var.trace_add("write", lambda *_: schedule())
+        win.bind("<Escape>", lambda _e: win.destroy())
+        self._relief_win = win
+        win.after(120, redraw)
+
+
+BLENDER_TEMPLATE = '''import bpy, os
+DEPTH = r"@DEPTH@"
+PHOTO = r"@PHOTO@"
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_grid_add(size=1, x_subdivisions=512, y_subdivisions=512)
+obj = bpy.context.active_object
+obj.name = "Relief"
+img = bpy.data.images.load(DEPTH, check_existing=False)
+try:
+    img.colorspace_settings.name = "Non-Color"
+except Exception:
+    pass
+iw, ih = img.size or (1, 1)
+f = 2.0 / max(iw, ih, 1)
+obj.scale = (iw * f, ih * f, 1.0)
+mat = bpy.data.materials.new("ReliefMat")
+mat.use_nodes = True
+nt = mat.node_tree
+for n in list(nt.nodes):
+    nt.nodes.remove(n)
+outn = nt.nodes.new("ShaderNodeOutputMaterial")
+outn.location = (100, 100)
+dtex = nt.nodes.new("ShaderNodeTexImage")
+dtex.location = (-600, 150)
+dtex.image = img
+disp = nt.nodes.new("ShaderNodeDisplacement")
+disp.location = (-300, 150)
+disp.inputs["Scale"].default_value = 0.15
+nt.links.new(dtex.outputs["Color"], disp.inputs["Height"])
+nt.links.new(disp.outputs["Displacement"], outn.inputs["Displacement"])
+if PHOTO and os.path.exists(PHOTO):
+    ptex = nt.nodes.new("ShaderNodeTexImage")
+    ptex.location = (-600, -250)
+    pimg = bpy.data.images.load(PHOTO, check_existing=False)
+    ptex.image = pimg
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (-300, -250)
+    nt.links.new(ptex.outputs["Color"], bsdf.inputs["Base Color"])
+    nt.links.new(bsdf.outputs["BSDF"], outn.inputs["Surface"])
+obj.data.materials.append(mat)
+try:
+    mat.cycles.displacement_method = 'DISPLACEMENT'
+except Exception:
+    try:
+        mat.cycles.displacement_method = 'BOTH'
+    except Exception:
+        pass
+sc = bpy.context.scene
+sc.render.engine = 'CYCLES'
+bpy.ops.object.light_add(type='SUN', location=(2, -2, 4))
+bpy.ops.object.camera_add(location=(0, 0, 2.2), rotation=(0, 0, 0))
+sc.camera = bpy.context.object
+for area in bpy.context.screen.areas:
+    if area.type == 'VIEW_3D':
+        for space in area.spaces:
+            if space.type == 'VIEW_3D':
+                space.shading.type = 'MATERIAL'
+'''
 
 
 if __name__ == "__main__":
