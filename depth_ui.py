@@ -178,7 +178,7 @@ def write_exr(path, img):
     hdr += attr("compression", "compression", _s.pack("<B", 0))
     hdr += attr("dataWindow", "box2i", _s.pack("<iiii", 0, 0, w - 1, h - 1))
     hdr += attr("displayWindow", "box2i", _s.pack("<iiii", 0, 0, w - 1, h - 1))
-    hdr += attr("lineOrder", "lineOrder", _s.pack("<B", 0))
+    hdr += attr("lineOrder", "lineOrder", _s.pack("<B", 1))
     hdr += attr("pixelAspectRatio", "float", _s.pack("<f", 1.0))
     hdr += attr("screenWindowCenter", "v2f", _s.pack("<ff", 0.0, 0.0))
     hdr += attr("screenWindowWidth", "float", _s.pack("<f", 1.0))
@@ -189,9 +189,11 @@ def write_exr(path, img):
     offsets = []
     pos = len(hdr) + 8 * h
     chunks = []
+    # строки храним снизу вверх (первый чанк = нижняя строка), lineOrder=DECREASING_Y:
+    # иначе Blender показывает EXR зеркально по вертикали
     for y in range(h):
         offsets.append(pos)
-        data = b"".join(p[y].tobytes() for p in planes16)
+        data = b"".join(p[h - 1 - y].tobytes() for p in planes16)
         chunks.append(_s.pack("<ii", y, len(data)) + data)
         pos += 8 + len(data)
     with open(path, "wb") as f:
