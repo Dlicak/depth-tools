@@ -54,7 +54,13 @@ MODEL_URLS = {
     "small": "depth_anything_v2_vits_dynamic.onnx",
     "base": "depth_anything_v2_vitb_dynamic.onnx",
     "large": "depth_anything_v2_vitl_dynamic.onnx",
+    "base_in": "depth_anything_v2_vitb_indoor_dynamic.onnx",
+    "base_out": "depth_anything_v2_vitb_outdoor_dynamic.onnx",
+    "large_in": "depth_anything_v2_vitl_indoor_dynamic.onnx",
+    "large_out": "depth_anything_v2_vitl_outdoor_dynamic.onnx",
 }
+
+METRIC_MODELS = {"zoe", "base_in", "base_out", "large_in", "large_out"}
 
 
 def download_model(key, dst):
@@ -372,11 +378,15 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         ttk.Label(row, text="Модель:", width=15).pack(side="left", **pad)
         _m = str(cfg.get("model", "small")).lower()
-        if _m not in ("small", "base", "large", "midas", "zoe"):
+        if _m not in ("small", "base", "large", "midas", "zoe",
+                  "base_in", "base_out", "large_in", "large_out"):
             _m = "small"
-        _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS", "zoe": "ZoeDepth"}
+        _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
+                  "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
+                  "large_in": "Large Indoor", "large_out": "Large Outdoor"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
-        ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth"],
+        ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
+                            "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
                      width=10, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
@@ -822,8 +832,10 @@ class DepthUI(tk.Tk):
     def collect(self):
         c = dict(cfg)
         c["model"] = {"small": "small", "base": "base", "large": "large",
-                      "midas": "midas", "zoedepth": "zoe",
-                      "zoe": "zoe"}.get(self.vars["model"].get().lower(), "small")
+                      "midas": "midas", "zoedepth": "zoe", "zoe": "zoe",
+                      "base indoor": "base_in", "base outdoor": "base_out",
+                      "large indoor": "large_in",
+                      "large outdoor": "large_out"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         if str(c["src"]).lower().endswith(".exr"):
@@ -950,7 +962,7 @@ class DepthUI(tk.Tk):
                         pass
             d = d - d.min()
             d = d / (d.max() + 1e-8)
-            if c["model"] == "zoe":
+            if c["model"] in METRIC_MODELS:
                 d = 1.0 - d
             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
