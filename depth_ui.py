@@ -153,8 +153,10 @@ def write_exr(path, img01):
     chunks = []
     for y in range(h):
         offsets.append(pos)
-        chunks.append(_s.pack("<ii", y, rowbytes) + rgb[y].tobytes())
-        pos += 8 + rowbytes
+        row = rgb[y]
+        data = b"".join([row[:, 0].tobytes(), row[:, 1].tobytes(), row[:, 2].tobytes()])
+        chunks.append(_s.pack("<ii", y, len(data)) + data)
+        pos += 8 + len(data)
     with open(path, "wb") as f:
         f.write(hdr)
         f.write(_s.pack("<" + "Q" * h, *offsets))
