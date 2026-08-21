@@ -21,6 +21,8 @@ DEFAULTS = {
     "depth_hi": 100.0,
     "near_m": 1.0,
     "far_m": 30.0,
+    "zoe_auto": False,
+    "dist_mode": False,
     "depth_contrast": 1.0,
     "overlay_alpha": 0.45,
     "blur_strength": 6.0,
@@ -334,6 +336,14 @@ class DepthUI(tk.Tk):
         ttk.Entry(row, width=7, textvariable=self.vars["near_m"]).pack(side="left", padx=(10, 2))
         ttk.Label(row, text="—").pack(side="left")
         ttk.Entry(row, width=7, textvariable=self.vars["far_m"]).pack(side="left", padx=2)
+        self.vars["zoe_auto"] = tk.BooleanVar(value=bool(cfg.get("zoe_auto", False)))
+        self.vars["dist_mode"] = tk.BooleanVar(value=bool(cfg.get("dist_mode", False)))
+        cb_row = ttk.Frame(self)
+        cb_row.pack(fill="x")
+        ttk.Checkbutton(cb_row, text="Авто-метры (ZoeDepth)",
+                        variable=self.vars["zoe_auto"]).pack(side="left", padx=(25, 10))
+        ttk.Checkbutton(cb_row, text="R = расстояние от камеры",
+                        variable=self.vars["dist_mode"]).pack(side="left")
         ttk.Label(row, text="ближнее — дальнее (для EXR и TIFF32)").pack(side="left", padx=8)
 
         # --- разрешение входа ---
@@ -714,6 +724,40 @@ class DepthUI(tk.Tk):
         self.lbl_status.configure(text="Обработка...")
         threading.Thread(target=self.work, args=(c,), daemon=True).start()
 
+    def _safe_ui_set(self, key, value):
+        try:
+            self.after(0, lambda: self.vars[key].set(str(value)))
+        except Exception:
+            pass
+
+    def _zoe_meters(self, img):
+        """ZoeDepth NK: оценка реальных метров сцены -> (ближнее, дальнее)."""
+        import onnxruntime as ort
+        zoe = common.find_model("zoedepth_nk_fp16.onnx")
+        if not os.path.exists(zoe):
+            zoe = os.path.join(common.model_dir(), "zoedepth_nk_fp16.onnx")
+        if not os.path.exists(zoe):
+            url = "https://huggingface.co/Heliosoph/zoedepth-nyu-kitti-onnx/resolve/main/model_fp16.onnx"
+            self._safe_status("Скачивание ZoeDepth (~662 МБ)...")
+            import urllib.request
+            urllib.request.urlretrieve(url, zoe)
+            self._safe_status("ZoeDepth скачана")
+        sess = ort.InferenceSession(zoe, providers=["CPUExecutionProvider"])
+        inp = img.resize((512, 384), Image.LANCZOS)
+        x = np.asarray(inp, dtype=np.float32) / 255.0
+        x = (x - np.array([0.485, 0.456, 0.406], np.float32)) / np.array(
+            [0.229, 0.224, 0.225], np.float32)
+        x = x.transpose(2, 0, 1)[None]
+        out = sess.run(None, {sess.get_inputs()[0].name: x})[0].squeeze()
+        p2, p98 = np.percentile(out, [2, 98])
+        return float(max(0.1, p2)), float(p98)
+
+    def _safe_status(self, text):
+        try:
+            self.after(0, lambda: self.lbl_status.configure(text=text))
+        except Exception:
+            pass
+
     def work(self, c):
         try:
             model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
@@ -819,9 +863,22 @@ class DepthUI(tk.Tk):
                     return None
             near_m = _parse_m(c.get("near_m"))
             far_m = _parse_m(c.get("far_m"))
+            if c.get("zoe_auto"):
+                try:
+                    zn, zf = self._zoe_meters(img)
+                    if zn is not None:
+                        near_m, far_m = round(zn, 1), round(max(zf, zn + 0.5), 1)
+                        self._safe_ui_set("near_m", near_m)
+                        self._safe_ui_set("far_m", far_m)
+                except Exception:
+                    pass
             if near_m is not None and far_m is not None and far_m > near_m:
-                # высота рельефа в метрах: дальняя точка = 0, ближняя = максимум
-                dmetric = (np.clip(dfloat, 0.0, 1.0) * (far_m - near_m)).astype(np.float32)
+                if c.get("dist_mode"):
+                    # истинное расстояние от камеры: близкое = малое, далёкое = большое
+                    dmetric = (near_m + (1.0 - np.clip(dfloat, 0.0, 1.0)) * (far_m - near_m)).astype(np.float32)
+                else:
+                    # высота рельефа в метрах: дальняя точка = 0, ближняя = максимум
+                    dmetric = (np.clip(dfloat, 0.0, 1.0) * (far_m - near_m)).astype(np.float32)
             else:
                 dmetric = None
 
