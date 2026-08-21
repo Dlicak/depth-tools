@@ -832,7 +832,11 @@ class DepthUI(tk.Tk):
                 else:
                     Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
             if c.get("depth_exr"):
-                write_exr(f"{OUT}/photo_depth.exr", dmetric if dmetric is not None else dfloat)
+                if dmetric is not None:
+                    # R = метры, G и B = относительная 0-1 (для просмотра берите канал G)
+                    write_exr(f"{OUT}/photo_depth.exr", np.stack([dmetric, dfloat, dfloat], axis=-1))
+                else:
+                    write_exr(f"{OUT}/photo_depth.exr", dfloat)
             deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
