@@ -203,8 +203,8 @@ def write_exr(path, img):
             f.write(ch)
 
 
-def _exr_load_rgb(path):
-    # полное чтение несжатых scanline-EXR (формат этого инструмента) -> PIL RGB; иначе None
+def _exr_planes(path):
+    # чтение несжатых scanline-EXR (формат этого инструмента) -> {канал: float2D}; иначе None
     try:
         import struct as _st
         d = open(path, "rb").read()
@@ -243,17 +243,35 @@ def _exr_load_rgb(path):
                 # DECREASING_Y: чанк 0 = нижняя строка файла
                 arr[h-1-y if dec else y] = row
             planes[nm] = arr
-        if "R" not in planes:
-            return None
-        rgb = np.stack([planes.get("R"), planes.get("G"), planes.get("B")], axis=-1)
-        rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
-        lin = np.clip(rgb, 0.0, 1.0)
-        srgb = np.where(lin <= 0.0031308, lin*12.92,
-                        1.055*np.power(np.clip(lin, 1e-8, None), 1/2.4) - 0.055)
-        from PIL import Image as _I
-        return _I.fromarray((np.clip(srgb, 0.0, 1.0)*255).astype(np.uint8)).convert("RGB")
+        return planes
     except Exception:
         return None
+
+
+def _exr_load_rgb(path):
+    # полное чтение несжатых scanline-EXR -> PIL RGB; иначе None
+    planes = _exr_planes(path)
+    if not planes or "R" not in planes:
+        return None
+    rgb = np.stack([planes.get("R"), planes.get("G"), planes.get("B")], axis=-1)
+    rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+    lin = np.clip(rgb, 0.0, 1.0)
+    srgb = np.where(lin <= 0.0031308, lin*12.92,
+                    1.055*np.power(np.clip(lin, 1e-8, None), 1/2.4) - 0.055)
+    from PIL import Image as _I
+    return _I.fromarray((np.clip(srgb, 0.0, 1.0)*255).astype(np.uint8)).convert("RGB")
+
+
+def _exr_alpha(path, w, h):
+    # альфа-канал EXR (глубина), приведённый к размеру w×h; иначе None
+    planes = _exr_planes(path)
+    if not planes or "A" not in planes:
+        return None
+    a = np.nan_to_num(planes["A"], nan=0.0, posinf=0.0, neginf=0.0)
+    from PIL import Image as _I
+    im = _I.fromarray(np.clip(a, 0.0, 1.0))
+    a = np.asarray(im.resize((w, h), _I.LANCZOS), dtype=np.float32)
+    return np.clip(a, 0.0, 1.0)
 
 
 def _exr_thumb(path, max_side=150):
@@ -950,17 +968,24 @@ class DepthUI(tk.Tk):
             dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
 
             if c.get("merge_prev"):
-                prev_png = f"{OUT}/photo_depth.png"
                 meta_p = f"{OUT}/.last_depth.json"
                 same = False
                 try:
                     info = json.load(open(meta_p))
-                    same = os.path.realpath(str(info.get("src", ""))) == os.path.realpath(c["src"])
+                    fmt = "exr" if c.get("cmap_exr") else "png"
+                    same = (os.path.realpath(str(info.get("src", ""))) == os.path.realpath(c["src"])
+                            and str(info.get("fmt", "")) == fmt)
                 except Exception:
                     same = False
-                if same and os.path.isfile(prev_png):
-                    prev = np.asarray(Image.open(prev_png).convert("L").resize(
-                        (w, h), Image.LANCZOS), dtype=np.float32) / 255.0
+                prev = None
+                if same:
+                    # формат прошлой карты = формату выхода: EXR <-> EXR, иначе PNG
+                    if c.get("cmap_exr") and os.path.isfile(f"{OUT}/photo_colormap.exr"):
+                        prev = _exr_alpha(f"{OUT}/photo_colormap.exr", w, h)
+                    elif not c.get("cmap_exr") and os.path.isfile(f"{OUT}/photo_depth.png"):
+                        prev = np.asarray(Image.open(f"{OUT}/photo_depth.png").convert("L").resize(
+                            (w, h), Image.LANCZOS), dtype=np.float32) / 255.0
+                if prev is not None:
                     mn, mx = float(prev.min()), float(prev.max())
                     prev = (prev - mn) / (mx - mn + 1e-8)
                     dfloat = np.clip(dfloat * 0.5 + prev * 0.5, 0.0, 1.0)
@@ -976,7 +1001,8 @@ class DepthUI(tk.Tk):
 
             depth_out.save(f"{OUT}/photo_depth.png")
             try:
-                json.dump({"src": c["src"]}, open(f"{OUT}/.last_depth.json", "w"))
+                json.dump({"src": c["src"], "fmt": "exr" if c.get("cmap_exr") else "png"},
+                          open(f"{OUT}/.last_depth.json", "w"))
             except Exception:
                 pass
 
