@@ -25,6 +25,14 @@ fi
 .venv/bin/pip install --upgrade pip >/dev/null
 .venv/bin/pip install --only-binary=:all: -r requirements.txt
 
+# 2b. GPU (NVIDIA): ускорение инференса в 5-10 раз
+if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "      NVIDIA GPU найден — ставлю onnxruntime-gpu + CUDA-библиотеки..."
+    .venv/bin/pip install --only-binary=:all: "onnxruntime-gpu==1.26.0" \
+        nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12 \
+        || echo "      Не удалось, остаёмся на CPU."
+fi
+
 # 3. модель
 echo "[3/4] Проверка модели..."
 if [ ! -f "$HOME/Z-depth/depth_anything_v2_small.onnx" ]; then
