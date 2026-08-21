@@ -372,10 +372,11 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         ttk.Label(row, text="Модель:", width=15).pack(side="left", **pad)
         _m = str(cfg.get("model", "small")).lower()
-        if _m not in ("small", "base", "large"):
+        if _m not in ("small", "base", "large", "midas", "zoe"):
             _m = "small"
-        self.vars["model"] = tk.StringVar(value=_m.capitalize())
-        ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large"],
+        _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS", "zoe": "ZoeDepth"}
+        self.vars["model"] = tk.StringVar(value=_mdisp[_m])
+        ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth"],
                      width=10, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
@@ -820,7 +821,9 @@ class DepthUI(tk.Tk):
 
     def collect(self):
         c = dict(cfg)
-        c["model"] = self.vars["model"].get().lower()
+        c["model"] = {"small": "small", "base": "base", "large": "large",
+                      "midas": "midas", "zoedepth": "zoe",
+                      "zoe": "zoe"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         if str(c["src"]).lower().endswith(".exr"):
@@ -872,12 +875,21 @@ class DepthUI(tk.Tk):
 
     def work(self, c):
         try:
-            model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
-            if not os.path.exists(model):
-                self.after(0, lambda: self.lbl_status.configure(
-                    text=f"Скачивание модели {c['model'].capitalize()}..."))
-                download_model(c["model"], model)
-                self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
+            if c["model"] == "midas":
+                model = common.find_model("midas_v21_small_256.onnx")
+                if not os.path.exists(model):
+                    raise ValueError("MiDaS: нет файла midas_v21_small_256.onnx в папке Z-depth")
+            elif c["model"] == "zoe":
+                model = common.find_model("zoedepth_nk_fp16.onnx")
+                if not os.path.exists(model):
+                    raise ValueError("ZoeDepth: нет файла zoedepth_nk_fp16.onnx в папке Z-depth")
+            else:
+                model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
+                if not os.path.exists(model):
+                    self.after(0, lambda: self.lbl_status.configure(
+                        text=f"Скачивание модели {c['model'].capitalize()}..."))
+                    download_model(c["model"], model)
+                    self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
             if str(c["src"]).lower().endswith(".exr"):
                 img = _exr_load_rgb(c["src"])
                 if img is None:
@@ -897,6 +909,10 @@ class DepthUI(tk.Tk):
                 img = Image.fromarray((np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
             nw = int(c["in_w"]) - int(c["in_w"]) % 14
             nh = int(c["in_h"]) - int(c["in_h"]) % 14
+            if c["model"] == "midas":
+                nw = nh = 256
+            elif c["model"] == "zoe":
+                nw, nh = 512, 384
 
             import subprocess
             import sys
@@ -934,6 +950,8 @@ class DepthUI(tk.Tk):
                         pass
             d = d - d.min()
             d = d / (d.max() + 1e-8)
+            if c["model"] == "zoe":
+                d = 1.0 - d
             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
             if g_strength > 0:
