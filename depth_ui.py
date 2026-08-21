@@ -24,6 +24,7 @@ DEFAULTS = {
     "blur_strength": 6.0,
     "out_size": "300x300",
     "invert": False,
+    "render2": False,
     "dof_near": False,
     "compress": False,
     "focus_enable": False,
@@ -443,6 +444,9 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
         ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
+        self.vars["render2"] = tk.BooleanVar(value=bool(cfg.get("render2", False)))
+        ttk.Checkbutton(row, text="Второй рендер (от готовой карты)",
+                        variable=self.vars["render2"]).pack(side="left", padx=10, pady=4)
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
 
@@ -844,6 +848,7 @@ class DepthUI(tk.Tk):
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
         c["invert"] = bool(self.vars["invert"].get())
+        c["render2"] = bool(self.vars["render2"].get())
         c["dof_near"] = bool(self.vars["dof_near"].get())
         c["depth16"] = bool(self.vars["depth16"].get())
         c["depth32"] = bool(self.vars["depth32"].get())
@@ -1030,6 +1035,14 @@ class DepthUI(tk.Tk):
                     _srgb_to_linear(crgb).astype(np.float32),
                     np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
+
+            if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
+                # второй проход: свежая цветная карта сама становится источником
+                c2 = dict(c)
+                c2["src"] = f"{OUT}/photo_colormap.exr"
+                c2["render2"] = False
+                self.after(0, lambda: self.lbl_status.configure(text="Рендер 1/2 готов, считаю второй…"))
+                return self.work(c2)
 
             depth_p = depth_out.copy()
             overlay_p = overlay.copy()
