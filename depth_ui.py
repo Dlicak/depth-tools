@@ -19,10 +19,6 @@ DEFAULTS = {
     "depth_gamma": 1.0,
     "depth_lo": 0.0,
     "depth_hi": 100.0,
-    "near_m": 1.0,
-    "far_m": 30.0,
-    "zoe_auto": False,
-    "dist_mode": False,
     "depth_contrast": 1.0,
     "overlay_alpha": 0.45,
     "blur_strength": 6.0,
@@ -328,25 +324,6 @@ class DepthUI(tk.Tk):
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
         slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 4, 0)
         slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}", 4, 1)
-
-        # --- реальные метры для EXR/TIFF32 ---
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        ttk.Label(row, text="Расстояние, м:", width=15).pack(side="left", **pad)
-        self.vars["near_m"] = tk.StringVar(value=str(cfg.get("near_m", 1.0)))
-        self.vars["far_m"] = tk.StringVar(value=str(cfg.get("far_m", 30.0)))
-        ttk.Entry(row, width=7, textvariable=self.vars["near_m"]).pack(side="left", padx=(10, 2))
-        ttk.Label(row, text="—").pack(side="left")
-        ttk.Entry(row, width=7, textvariable=self.vars["far_m"]).pack(side="left", padx=2)
-        self.vars["zoe_auto"] = tk.BooleanVar(value=bool(cfg.get("zoe_auto", False)))
-        self.vars["dist_mode"] = tk.BooleanVar(value=bool(cfg.get("dist_mode", False)))
-        cb_row = ttk.Frame(self)
-        cb_row.pack(fill="x")
-        ttk.Checkbutton(cb_row, text="Авто-метры (ZoeDepth)",
-                        variable=self.vars["zoe_auto"]).pack(side="left", padx=(25, 10))
-        ttk.Checkbutton(cb_row, text="R = расстояние от камеры",
-                        variable=self.vars["dist_mode"]).pack(side="left")
-        ttk.Label(row, text="ближнее — дальнее (для EXR и TIFF32)").pack(side="left", padx=8)
 
         # --- разрешение входа ---
         row = ttk.Frame(self)
@@ -718,10 +695,6 @@ class DepthUI(tk.Tk):
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
         c["focus_y"] = self._focus_y
-        c["zoe_auto"] = bool(self.vars["zoe_auto"].get())
-        c["dist_mode"] = bool(self.vars["dist_mode"].get())
-        c["near_m"] = self.vars["near_m"].get()
-        c["far_m"] = self.vars["far_m"].get()
         return c
 
     def run(self):
@@ -733,40 +706,6 @@ class DepthUI(tk.Tk):
         self.btn_run.configure(state="disabled")
         self.lbl_status.configure(text="Обработка...")
         threading.Thread(target=self.work, args=(c,), daemon=True).start()
-
-    def _safe_ui_set(self, key, value):
-        try:
-            self.after(0, lambda: self.vars[key].set(str(value)))
-        except Exception:
-            pass
-
-    def _zoe_meters(self, img):
-        """ZoeDepth NK: оценка реальных метров сцены -> (ближнее, дальнее)."""
-        import onnxruntime as ort
-        zoe = common.find_model("zoedepth_nk_fp16.onnx")
-        if not os.path.exists(zoe):
-            zoe = os.path.join(common.model_dir(), "zoedepth_nk_fp16.onnx")
-        if not os.path.exists(zoe):
-            url = "https://huggingface.co/Heliosoph/zoedepth-nyu-kitti-onnx/resolve/main/model_fp16.onnx"
-            self._safe_status("Скачивание ZoeDepth (~662 МБ)...")
-            import urllib.request
-            urllib.request.urlretrieve(url, zoe)
-            self._safe_status("ZoeDepth скачана")
-        sess = ort.InferenceSession(zoe, providers=["CPUExecutionProvider"])
-        inp = img.resize((512, 384), Image.LANCZOS)
-        x = np.asarray(inp, dtype=np.float32) / 255.0
-        x = (x - np.array([0.485, 0.456, 0.406], np.float32)) / np.array(
-            [0.229, 0.224, 0.225], np.float32)
-        x = x.transpose(2, 0, 1)[None]
-        out = sess.run(None, {sess.get_inputs()[0].name: x})[0].squeeze()
-        p2, p98 = np.percentile(out, [2, 98])
-        return float(max(0.1, p2)), float(p98)
-
-    def _safe_status(self, text):
-        try:
-            self.after(0, lambda: self.lbl_status.configure(text=text))
-        except Exception:
-            pass
 
     def work(self, c):
         try:
@@ -866,45 +805,12 @@ class DepthUI(tk.Tk):
 
             depth_out.save(f"{OUT}/photo_depth.png")
 
-            def _parse_m(v):
-                try:
-                    return float(str(v).replace(",", "."))
-                except Exception:
-                    return None
-            near_m = _parse_m(c.get("near_m"))
-            far_m = _parse_m(c.get("far_m"))
-            if c.get("zoe_auto"):
-                try:
-                    zn, zf = self._zoe_meters(img)
-                    if zn is not None:
-                        near_m, far_m = round(zn, 1), round(max(zf, zn + 0.5), 1)
-                        self._safe_ui_set("near_m", near_m)
-                        self._safe_ui_set("far_m", far_m)
-                except Exception as e:
-                    self._safe_status(f"ZoeDepth недоступна: {type(e).__name__}")
-            if near_m is not None and far_m is not None and far_m > near_m:
-                if c.get("dist_mode"):
-                    # истинное расстояние от камеры: близкое = малое, далёкое = большое
-                    dmetric = (near_m + (1.0 - np.clip(dfloat, 0.0, 1.0)) * (far_m - near_m)).astype(np.float32)
-                else:
-                    # высота рельефа в метрах: дальняя точка = 0, ближняя = максимум
-                    dmetric = (np.clip(dfloat, 0.0, 1.0) * (far_m - near_m)).astype(np.float32)
-            else:
-                dmetric = None
-
             if c["depth16"]:
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
             if c.get("depth32"):
-                if dmetric is not None:
-                    Image.fromarray(dmetric).save(f"{OUT}/photo_depth_32.tif")
-                else:
-                    Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
+                Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
             if c.get("depth_exr"):
-                if dmetric is not None:
-                    # R = метры, G и B = относительная 0-1 (для просмотра берите канал G)
-                    write_exr(f"{OUT}/photo_depth.exr", np.stack([dmetric, dfloat, dfloat], axis=-1))
-                else:
-                    write_exr(f"{OUT}/photo_depth.exr", dfloat)
+                write_exr(f"{OUT}/photo_depth.exr", dfloat)
             deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
