@@ -436,6 +436,9 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="Смешать с прошлой картой (50/50)", variable=self.vars["merge_prev"]).pack(side="left", padx=10, pady=4)
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
+
+        row = ttk.Frame(self)
+        row.pack(fill="x")
         self.vars["depth16"] = tk.BooleanVar(value=bool(cfg.get("depth16", False)))
         ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
         self.vars["depth32"] = tk.BooleanVar(value=bool(cfg.get("depth32", False)))
@@ -443,7 +446,7 @@ class DepthUI(tk.Tk):
         self.vars["depth_exr"] = tk.BooleanVar(value=bool(cfg.get("depth_exr", False)))
         ttk.Checkbutton(row, text="EXR float", variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
         self.vars["cmap_exr"] = tk.BooleanVar(value=bool(cfg.get("cmap_exr", False)))
-        ttk.Checkbutton(row, text="EXR цветная (RGB + глубина в альфе)",
+        ttk.Checkbutton(row, text="Цветная карта глубины (EXR)",
                         variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
