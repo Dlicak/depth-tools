@@ -203,6 +203,60 @@ def write_exr(path, img):
             f.write(ch)
 
 
+def _exr_thumb(path, max_side=150):
+    # превью для несжатых scanline-EXR (формат этого инструмента); иначе None
+    try:
+        import struct as _st
+        d = open(path, "rb").read()
+        if d[:4] != b"\x76\x2f\x31\x01":
+            return None
+        pos = 8
+        attrs = {}
+        while d[pos] != 0:
+            n = d.index(0, pos); name = d[pos:n].decode(); pos = n+1
+            t = d.index(0, pos); typ = d[pos:t].decode(); pos = t+1
+            size = _st.unpack("<i", d[pos:pos+4])[0]
+            attrs[name] = (typ, d[pos+4:pos+4+size]); pos += 4+size
+        pos += 1
+        if attrs.get("compression", ("", b"\xff"))[1][0] != 0:
+            return None
+        x1, y1, x2, y2 = _st.unpack("<iiii", attrs["dataWindow"][1])
+        w, h = x2-x1+1, y2-y1+1
+        chans = []
+        blob = attrs["channels"][1]
+        p = 0
+        types = []
+        while blob[p] != 0:
+            e = blob.index(0, p); nm = blob[p:e].decode(); p = e+1
+            types.append(_st.unpack("<i", blob[p:p+4])[0]); p += 16
+            chans.append(nm)
+        if types and any(t != 1 for t in types):
+            return None  # только half-float
+        dec = attrs.get("lineOrder", ("", b"\x00"))[1][0] == 1
+        offs = _st.unpack("<" + "Q"*h, d[pos:pos+8*h])
+        planes = {}
+        for ci, nm in enumerate(chans):
+            arr = np.empty((h, w), dtype=np.float32)
+            for y in range(h):
+                o = offs[y] + 8 + ci*w*2
+                row = np.frombuffer(d[o:o+w*2], dtype="<f2").astype(np.float32)
+                arr[y if dec else h-1-y] = row
+            planes[nm] = arr
+        if "R" not in planes:
+            return None
+        rgb = np.stack([planes.get("R"), planes.get("G"), planes.get("B")], axis=-1)
+        rgb = np.nan_to_num(rgb, nan=0.0, posinf=0.0, neginf=0.0)
+        lin = np.clip(rgb, 0.0, 1.0)
+        srgb = np.where(lin <= 0.0031308, lin*12.92,
+                        1.055*np.power(np.clip(lin, 1e-8, None), 1/2.4) - 0.055)
+        from PIL import Image as _I
+        out = _I.fromarray((np.clip(srgb, 0.0, 1.0)*255).astype(np.uint8))
+        out.thumbnail((max_side, max_side), _I.BILINEAR)
+        return out.convert("RGB")
+    except Exception:
+        return None
+
+
 def png_write_rgb16(path, rgb01):
     import zlib
     import struct
@@ -456,7 +510,7 @@ class DepthUI(tk.Tk):
         self.bind("<Configure>", lambda _e: self._schedule_resize())
 
     def pick_src(self):
-        f = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All", "*.*")])
+        f = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.exr"), ("All", "*.*")])
         if f:
             self.var_src.set(f)
 
@@ -546,12 +600,20 @@ class DepthUI(tk.Tk):
             for path in paths:
                 if load_gen[0] == 0 or path not in tile_refs:
                     return
+                low = path.lower()
+                im = None
                 try:
                     im = Image.open(path)
-                    im.thumbnail((150, 150), Image.LANCZOS)
+                    if low.endswith((".jpg", ".jpeg")):
+                        im.draft("RGB", (300, 300))
+                    im.thumbnail((150, 150), Image.BILINEAR)
                     im = im.convert("RGB")
                 except Exception:
-                    continue
+                    im = None
+                if im is None and low.endswith(".exr"):
+                    im = _exr_thumb(path)
+                if im is None:
+                    im = Image.new("RGB", (140, 100), (38, 38, 38))
                 self.after(0, lambda p=path, im=im: self._set_thumb(p, im, tile_refs, load_gen))
 
         def refresh(*_a):
@@ -566,9 +628,11 @@ class DepthUI(tk.Tk):
                 files = sorted(os.listdir(folder), reverse=True)
             except Exception:
                 files = []
-            exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+            exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".exr", ".tif", ".tiff")
             paths = []
             for i, name in enumerate(files):
+                if len(paths) >= 300:
+                    break
                 if not name.lower().endswith(exts):
                     continue
                 if q and q not in name.lower():
