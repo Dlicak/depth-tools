@@ -17,9 +17,7 @@ SRC = common.default_src()
 DEFAULTS = {
     "model": "small",
     "input_size": 1024,
-    "unsharp_radius": 3.0,
-    "unsharp_percent": 120.0,
-    "unsharp_thresh": 2.0,
+    "depth_gamma": 1.0,
     "depth_contrast": 1.0,
     "overlay_alpha": 0.45,
     "blur_strength": 6.0,
@@ -230,11 +228,9 @@ class DepthUI(tk.Tk):
             lbl.pack(side="left")
             self.vars[key] = var
 
-        slider("Unsharp радиус", "unsharp_radius", 0, 10, lambda v: f"{v:.1f}", 0, 0)
         slider("Оверлей", "overlay_alpha", 0, 1, lambda v: f"{v:.2f}", 0, 1)
-        slider("Unsharp сила (%)", "unsharp_percent", 0, 400, lambda v: f"{v:.0f}", 1, 0)
         slider("Размытие DoF", "blur_strength", 0, 20, lambda v: f"{v:.1f}", 1, 1)
-        slider("Unsharp порог", "unsharp_thresh", 0, 10, lambda v: f"{v:.1f}", 2, 0)
+        slider("Расстояние глубины", "depth_gamma", 0.2, 5.0, lambda v: f"{v:.2f}", 2, 0)
         slider("Ширина фокуса", "focus_width", 5, 100, lambda v: f"{v:.0f}", 2, 1)
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
         slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 4, 0)
@@ -243,7 +239,7 @@ class DepthUI(tk.Tk):
         # --- разрешение входа ---
         row = ttk.Frame(self)
         row.pack(fill="x")
-        ttk.Label(row, text="Разрешение входа:", width=15).pack(side="left", **pad)
+        ttk.Label(row, text="Множитель:", width=15).pack(side="left", **pad)
         self.vars["input_mult"] = tk.DoubleVar(value=float(cfg.get("input_mult", 2)))
         self._input_scale = ttk.Scale(row, from_=1, to=5, variable=self.vars["input_mult"],
                                       orient="horizontal", command=lambda _v: self._update_input_range())
@@ -255,10 +251,10 @@ class DepthUI(tk.Tk):
         self._ram_hint.pack(fill="x", padx=25, pady=(0, 2))
         self._update_input_range()
 
-        # --- сжать до 14px: под ползунком разрешения ---
+        # --- эконом ОЗУ: под множителем ---
         row = ttk.Frame(self)
         row.pack(fill="x")
-        ttk.Checkbutton(row, text="Сжать до 14px", variable=self.vars["compress"],
+        ttk.Checkbutton(row, text="Эконом ОЗУ", variable=self.vars["compress"],
                         command=self._update_input_range).pack(side="left", padx=25, pady=2)
 
         # --- сжать оригинал до заданного размера ---
@@ -527,7 +523,7 @@ class DepthUI(tk.Tk):
         self.lbl_status.configure(text=f"Фото выбрано: {path.split('/')[-1]}")
 
     def _update_input_range(self):
-        top = 100 if self.vars["compress"].get() else 5
+        top = 10 if self.vars["compress"].get() else 5
         self._input_scale.configure(to=top)
         if float(self.vars["input_mult"].get()) > top:
             self.vars["input_mult"].set(float(top))
@@ -587,7 +583,7 @@ class DepthUI(tk.Tk):
             s = max_side / max(src_img.width, src_img.height)
             src_img = src_img.resize((max(1, int(src_img.width * s)), max(1, int(src_img.height * s))), Image.LANCZOS)
         if self.vars["compress"].get():
-            scale = (14 * mult) / max(src_img.width, src_img.height)
+            scale = (200 * mult) / max(src_img.width, src_img.height)
             c["in_w"] = max(14, int(src_img.width * scale))
             c["in_h"] = max(14, int(src_img.height * scale))
         else:
@@ -667,7 +663,7 @@ class DepthUI(tk.Tk):
                     if av is not None and av < floor:
                         proc.kill()
                         raise MemoryError("Обработка остановлена: свободная ОЗУ закончилась.\n"
-                                          "Уменьшите «Разрешение входа» или включите «Сжать оригинал до».")
+                                          "Уменьшите «Множитель» или включите «Эконом ОЗУ».")
                 if proc.returncode != 0:
                     raise RuntimeError(f"Ошибка вычисления глубины (код {proc.returncode}).")
                 d = np.load(tmp_out).astype(np.float32)
@@ -691,19 +687,14 @@ class DepthUI(tk.Tk):
             dfloat = np.clip(dfull, 0.0, 1.0)
             mn, mx = float(dfloat.min()), float(dfloat.max())
             dfloat = (dfloat - mn) / (mx - mn + 1e-8)
-            ur = max(1, int(c["unsharp_radius"]))
-            upct = float(c["unsharp_percent"]) / 100.0
-            uthr = int(c["unsharp_thresh"]) / 255.0
-            ub = _blur_f(dfloat, ur)
-            ud = dfloat - ub
-            dfloat = np.clip(dfloat + ud * upct * (np.abs(ud) > uthr), 0.0, 1.0)
-            mn, mx = float(dfloat.min()), float(dfloat.max())
-            dfloat = (dfloat - mn) / (mx - mn + 1e-8)
             if c["depth_contrast"] != 1.0:
                 dmean = float(dfloat.mean())
                 dfloat = np.clip((dfloat - dmean) * float(c["depth_contrast"]) + dmean, 0.0, 1.0)
             if c["invert"]:
                 dfloat = 1.0 - dfloat
+            g = float(c.get("depth_gamma", 1.0) or 1.0)
+            if g != 1.0:
+                dfloat = np.clip(dfloat, 0.0, 1.0) ** g
 
             out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
             w, h = [int(x) for x in out_size.split("x")]
