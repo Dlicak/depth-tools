@@ -1025,7 +1025,7 @@ class DepthUI(tk.Tk):
             side.save(f"{OUT}/photo_color_plus_depth.png")
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
-            hp = getattr(self, "_hybrid_prev", None)
+            hp = self.__dict__.get("_hybrid_prev")
             if hp is not None and c.get("hybrid") and hp.get("rgb") is not None:
                 rgb1 = hp["rgb"]
                 if rgb1.shape[:2] != crgb.shape[:2]:
@@ -1047,6 +1047,16 @@ class DepthUI(tk.Tk):
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
+                # первый рендер не пропадает: сохраняем его отдельно
+                try:
+                    write_exr(f"{OUT}/photo_colormap_1.exr", np.concatenate([
+                        _srgb_to_linear(crgb).astype(np.float32),
+                        np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1))
+                    Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap_1.png")
+                    Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB").save(
+                        f"{OUT}/photo_depth_1.png")
+                except Exception:
+                    pass
                 # второй проход: свежая цветная карта сама становится источником;
                 # результат гибридизируется с первым (50/50)
                 self._hybrid_prev = {
@@ -1061,7 +1071,7 @@ class DepthUI(tk.Tk):
                 self.after(0, lambda: self.lbl_status.configure(text="Рендер 1/2 готов, считаю второй…"))
                 return self.work(c2)
 
-            hp = getattr(self, "_hybrid_prev", None)
+            hp = self.__dict__.get("_hybrid_prev")
             if hp is not None and c.get("hybrid"):
                 a1 = hp["a"]
                 if a1.shape != dfloat.shape:
