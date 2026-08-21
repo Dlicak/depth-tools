@@ -820,7 +820,8 @@ class DepthUI(tk.Tk):
             near_m = _parse_m(c.get("near_m"))
             far_m = _parse_m(c.get("far_m"))
             if near_m is not None and far_m is not None and far_m > near_m:
-                dmetric = (near_m + (1.0 - np.clip(dfloat, 0.0, 1.0)) * (far_m - near_m)).astype(np.float32)
+                # высота рельефа в метрах: дальняя точка = 0, ближняя = максимум
+                dmetric = (np.clip(dfloat, 0.0, 1.0) * (far_m - near_m)).astype(np.float32)
             else:
                 dmetric = None
 
