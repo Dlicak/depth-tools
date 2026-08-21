@@ -564,12 +564,12 @@ class DepthUI(tk.Tk):
             scale = (14 * mult) / max(src_img.width, src_img.height)
             c["in_w"] = max(14, int(src_img.width * scale))
             c["in_h"] = max(14, int(src_img.height * scale))
-            c["out_size"] = f"{src_img.width}x{src_img.height}"
         else:
             c["in_w"] = max(256, mult * src_img.width)
             c["in_h"] = max(256, mult * src_img.height)
-            out_mult = int(self.vars["out_mult"].get().replace("x", ""))
-            c["out_size"] = f"{out_mult * orig_w}x{out_mult * orig_h}"
+        out_mult = int(self.vars["out_mult"].get().replace("x", ""))
+        c["out_size"] = f"{out_mult * orig_w}x{out_mult * orig_h}"
+        c["compress"] = bool(self.vars["compress"].get())
         for k, var in self.vars.items():
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
@@ -613,7 +613,7 @@ class DepthUI(tk.Tk):
             tokens = (nw // 14) * (nh // 14)
             est_mb = int(tokens * tokens * 0.0011) + 512
             av = avail_ram_mb()
-            if av is not None and est_mb > av * 0.85:
+            if av is not None and est_mb > av * 0.7:
                 raise MemoryError(
                     f"Недостаточно ОЗУ: нужно ~{est_mb / 1024:.1f} ГБ, доступно {av / 1024:.1f} ГБ.\n"
                     "Уменьшите «Разрешение входа» или включите «Сжать оригинал до».")
