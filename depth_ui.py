@@ -37,6 +37,7 @@ DEFAULTS = {
     "depth16": False,
     "depth32": False,
     "depth_exr": False,
+    "cmap_exr": False,
     "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
@@ -160,12 +161,13 @@ def write_exr(path, img):
     if a.ndim == 2:
         a = np.stack([a, a, a], axis=-1)
     h, w = a.shape[:2]
+    has_a = a.shape[2] == 4
 
     def attr(name, typ, data):
         return name.encode() + b"\0" + typ.encode() + b"\0" + _s.pack("<i", len(data)) + data
 
     chans = b""
-    for nm in ("B", "G", "R"):
+    for nm in ("B", "G", "R") + (("A",) if has_a else ()):
         chans += nm.encode() + b"\0" + _s.pack("<i", 1) + _s.pack("<B", 0) + b"\0\0\0" + _s.pack("<ii", 1, 1)
     chans += b"\0"
     hdr = b"\x76\x2f\x31\x01" + _s.pack("<I", 2)
@@ -178,15 +180,15 @@ def write_exr(path, img):
     hdr += attr("screenWindowCenter", "v2f", _s.pack("<ff", 0.0, 0.0))
     hdr += attr("screenWindowWidth", "float", _s.pack("<f", 1.0))
     hdr += b"\0"
-    rgb = np.stack([a[..., 2], a[..., 1], a[..., 0]], axis=-1).astype(np.float16)
-    rowbytes = w * 3 * 2
+    planes = [a[..., 2], a[..., 1], a[..., 0]] + ([a[..., 3]] if has_a else [])
+    planes16 = [p.astype(np.float16) for p in planes]
+    npl = len(planes)
     offsets = []
     pos = len(hdr) + 8 * h
     chunks = []
     for y in range(h):
         offsets.append(pos)
-        row = rgb[y]
-        data = b"".join([row[:, 0].tobytes(), row[:, 1].tobytes(), row[:, 2].tobytes()])
+        data = b"".join(p[y].tobytes() for p in planes16)
         chunks.append(_s.pack("<ii", y, len(data)) + data)
         pos += 8 + len(data)
     with open(path, "wb") as f:
@@ -391,6 +393,9 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="32-бит float (TIFF)", variable=self.vars["depth32"]).pack(side="left", padx=10, pady=4)
         self.vars["depth_exr"] = tk.BooleanVar(value=bool(cfg.get("depth_exr", False)))
         ttk.Checkbutton(row, text="EXR float", variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
+        self.vars["cmap_exr"] = tk.BooleanVar(value=bool(cfg.get("cmap_exr", False)))
+        ttk.Checkbutton(row, text="EXR цветная (RGB + глубина в альфе)",
+                        variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -708,6 +713,7 @@ class DepthUI(tk.Tk):
         c["depth16"] = bool(self.vars["depth16"].get())
         c["depth32"] = bool(self.vars["depth32"].get())
         c["depth_exr"] = bool(self.vars["depth_exr"].get())
+        c["cmap_exr"] = bool(self.vars["cmap_exr"].get())
         c["focus_enable"] = bool(self.vars["focus_enable"].get())
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
@@ -948,6 +954,10 @@ class DepthUI(tk.Tk):
             Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap.png")
             if c["depth16"]:
                 png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
+            if c.get("cmap_exr"):
+                rgba = np.concatenate([crgb.astype(np.float32),
+                                       np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
+                write_exr(f"{OUT}/photo_colormap.exr", rgba)
 
             depth_p = depth_out.copy()
             overlay_p = overlay.copy()
