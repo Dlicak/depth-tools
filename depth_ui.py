@@ -712,6 +712,10 @@ class DepthUI(tk.Tk):
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
         c["focus_y"] = self._focus_y
+        c["zoe_auto"] = bool(self.vars["zoe_auto"].get())
+        c["dist_mode"] = bool(self.vars["dist_mode"].get())
+        c["near_m"] = self.vars["near_m"].get()
+        c["far_m"] = self.vars["far_m"].get()
         return c
 
     def run(self):
@@ -870,8 +874,8 @@ class DepthUI(tk.Tk):
                         near_m, far_m = round(zn, 1), round(max(zf, zn + 0.5), 1)
                         self._safe_ui_set("near_m", near_m)
                         self._safe_ui_set("far_m", far_m)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._safe_status(f"ZoeDepth недоступна: {type(e).__name__}")
             if near_m is not None and far_m is not None and far_m > near_m:
                 if c.get("dist_mode"):
                     # истинное расстояние от камеры: близкое = малое, далёкое = большое
