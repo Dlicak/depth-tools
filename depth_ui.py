@@ -35,6 +35,7 @@ DEFAULTS = {
     "depth32": False,
     "src_max": 0,
     "guided": 45.0,
+    "denoise": 0.0,
 }
 
 cfg = DEFAULTS.copy()
@@ -237,6 +238,7 @@ class DepthUI(tk.Tk):
         slider("Ширина фокуса", "focus_width", 5, 100, lambda v: f"{v:.0f}", 2, 1)
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 3, 0)
         slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 4, 0)
+        slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}", 4, 1)
 
         # --- разрешение входа ---
         row = ttk.Frame(self)
@@ -631,6 +633,14 @@ class DepthUI(tk.Tk):
             if max_side and max(img.width, img.height) > max_side:
                 s = max_side / max(img.width, img.height)
                 img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
+            dn = float(c.get("denoise", 0) or 0)
+            if dn > 0:
+                arr = np.asarray(img, dtype=np.float32) / 255.0
+                r = int(1 + dn * 0.05)
+                eps = 10.0 ** (-4.0 + dn * 0.02)
+                arr = np.stack([guided_filter(_box_f(arr[..., k], r), arr[..., k], r, eps)
+                                for k in range(3)], axis=2)
+                img = Image.fromarray((np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
             nw = int(c["in_w"]) - int(c["in_w"]) % 14
             nh = int(c["in_h"]) - int(c["in_h"]) % 14
 
