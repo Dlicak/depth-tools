@@ -151,6 +151,11 @@ def colormap_rgb(t):
     return np.stack([r, g, b], axis=-1)
 
 
+def _srgb_to_linear(a):
+    a = np.clip(a, 0.0, 1.0)
+    return np.where(a <= 0.04045, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
+
+
 def write_exr(path, img):
     import struct as _s
     a = np.nan_to_num(np.asarray(img, dtype=np.float32), nan=0.0)
@@ -162,8 +167,10 @@ def write_exr(path, img):
     def attr(name, typ, data):
         return name.encode() + b"\0" + typ.encode() + b"\0" + _s.pack("<i", len(data)) + data
 
+    # каналы обязаны идти в алфавитном порядке: A, B, G, R
     chans = b""
-    for nm in ("B", "G", "R") + (("A",) if has_a else ()):
+    order = ([("A", 3)] if has_a else []) + [("B", 2), ("G", 1), ("R", 0)]
+    for nm, src in order:
         chans += nm.encode() + b"\0" + _s.pack("<i", 1) + _s.pack("<B", 0) + b"\0\0\0" + _s.pack("<ii", 1, 1)
     chans += b"\0"
     hdr = b"\x76\x2f\x31\x01" + _s.pack("<I", 2)
@@ -176,7 +183,7 @@ def write_exr(path, img):
     hdr += attr("screenWindowCenter", "v2f", _s.pack("<ff", 0.0, 0.0))
     hdr += attr("screenWindowWidth", "float", _s.pack("<f", 1.0))
     hdr += b"\0"
-    planes = [a[..., 2], a[..., 1], a[..., 0]] + ([a[..., 3]] if has_a else [])
+    planes = ([a[..., 3]] if has_a else []) + [a[..., 2], a[..., 1], a[..., 0]]
     planes16 = [p.astype(np.float16) for p in planes]
     npl = len(planes)
     offsets = []
@@ -861,8 +868,11 @@ class DepthUI(tk.Tk):
             if c["depth16"]:
                 png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
             if c.get("cmap_exr"):
-                rgba = np.concatenate([crgb.astype(np.float32),
-                                       np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
+                # цвет конвертируем sRGB -> linear, чтобы EXR выглядел как PNG;
+                # альфа (глубина) остаётся сырой 0-1 для нод
+                rgba = np.concatenate([
+                    _srgb_to_linear(crgb).astype(np.float32),
+                    np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
 
             depth_p = depth_out.copy()
