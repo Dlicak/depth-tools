@@ -1,4 +1,3 @@
-import glob
 import json
 import os
 import threading
@@ -739,12 +738,7 @@ class DepthUI(tk.Tk):
                 tf = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
                 tf.close()
                 tmp_out = tf.name
-                env = os.environ.copy()
-                import site
-                for sp in site.getsitepackages() + [site.getusersitepackages()]:
-                    for lib in glob.glob(os.path.join(sp, "nvidia", "*", "lib")):
-                        env["LD_LIBRARY_PATH"] = lib + os.pathsep + env.get("LD_LIBRARY_PATH", "")
-                proc = subprocess.Popen([sys.executable, worker, model, str(nw), str(nh), tmp_in, tmp_out], env=env)
+                proc = subprocess.Popen([sys.executable, worker, model, str(nw), str(nh), tmp_in, tmp_out])
                 total = total_ram_mb()
                 floor = max(400.0, (total or 0.0) * 0.08)
                 while proc.poll() is None:
