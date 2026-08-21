@@ -445,7 +445,7 @@ class DepthUI(tk.Tk):
         self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
         ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
         self.vars["render2"] = tk.BooleanVar(value=bool(cfg.get("render2", False)))
-        ttk.Checkbutton(row, text="Второй рендер (гибрид с первым)",
+        ttk.Checkbutton(row, text="Гибрид",
                         variable=self.vars["render2"]).pack(side="left", padx=10, pady=4)
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
@@ -962,6 +962,15 @@ class DepthUI(tk.Tk):
             w, h = [int(x) for x in out_size.split("x")]
             dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
 
+            hp = self.__dict__.get("_hybrid_prev")
+            if hp is not None and c.get("hybrid"):
+                # поход 3: глубина = первый + второй рендеры вместе
+                a1 = hp["a"]
+                if a1.shape != dfloat.shape:
+                    a1 = np.asarray(Image.fromarray(a1).resize((w, h), Image.LANCZOS), dtype=np.float32)
+                self.__dict__["_hyb_d2"] = np.clip(dfloat, 0.0, 1.0).astype(np.float32)
+                dfloat = np.clip(dfloat * 0.5 + np.clip(a1, 0.0, 1.0) * 0.5, 0.0, 1.0)
+
             depth_out = Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB")
             img_out = img.convert("RGB").resize((w, h), Image.LANCZOS)
 
@@ -1027,6 +1036,19 @@ class DepthUI(tk.Tk):
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
             hp = self.__dict__.get("_hybrid_prev")
             if hp is not None and c.get("hybrid") and hp.get("rgb") is not None:
+                # второй рендер не пропадает: сохраняем его отдельно
+                d2 = self.__dict__.pop("_hyb_d2", None)
+                if d2 is None:
+                    d2 = np.clip(dfloat, 0.0, 1.0).astype(np.float32)
+                try:
+                    write_exr(f"{OUT}/photo_colormap_2.exr", np.concatenate([
+                        _srgb_to_linear(crgb).astype(np.float32),
+                        d2[..., None].astype(np.float32)], axis=-1))
+                    Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap_2.png")
+                    Image.fromarray((d2 * 255).astype(np.uint8)).convert("RGB").save(
+                        f"{OUT}/photo_depth_2.png")
+                except Exception:
+                    pass
                 rgb1 = hp["rgb"]
                 if rgb1.shape[:2] != crgb.shape[:2]:
                     rgb1 = np.asarray(Image.fromarray(
@@ -1068,15 +1090,12 @@ class DepthUI(tk.Tk):
                 c2["src"] = f"{OUT}/photo_colormap.exr"
                 c2["render2"] = False
                 c2["hybrid"] = True
-                self.after(0, lambda: self.lbl_status.configure(text="Рендер 1/2 готов, считаю второй…"))
+                try:
+                    self.after(0, lambda: self.lbl_status.configure(text="Рендер 1/3 готов, считаю второй…"))
+                except Exception:
+                    pass
                 return self.work(c2)
 
-            hp = self.__dict__.get("_hybrid_prev")
-            if hp is not None and c.get("hybrid"):
-                a1 = hp["a"]
-                if a1.shape != dfloat.shape:
-                    a1 = np.asarray(Image.fromarray(a1).resize((w, h), Image.LANCZOS), dtype=np.float32)
-                dfloat = np.clip(dfloat * 0.5 + a1 * 0.5, 0.0, 1.0)
 
             depth_p = depth_out.copy()
             overlay_p = overlay.copy()
