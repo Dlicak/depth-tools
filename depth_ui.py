@@ -517,9 +517,31 @@ class DepthUI(tk.Tk):
         self.bind("<Configure>", lambda _e: self._schedule_resize())
 
     def pick_src(self):
-        f = filedialog.askopenfilename(filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.exr"), ("All", "*.*")])
+        import subprocess
+        start = self.var_src.get().strip()
+        initdir = os.path.dirname(start)
+        cmd = ["zenity", "--file-selection", "--title=Выбор фото",
+               "--file-filter=Изображения | *.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff *.exr",
+               "--file-filter=Все файлы | *"]
+        if start and os.path.isfile(start):
+            cmd.append(f"--filename={start}")
+        elif initdir and os.path.isdir(initdir):
+            cmd.append(f"--filename={initdir}/")
+        else:
+            cmd.append(f"--filename={os.path.join(common.home_dir(), 'Pictures')}/")
+        f = None
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if r.returncode == 0:
+                f = r.stdout.strip()
+        except Exception:
+            f = None
+        if not f:
+            f = filedialog.askopenfilename(
+                filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.exr"), ("All", "*.*")])
         if f:
             self.var_src.set(f)
+            self.lbl_status.configure(text=f"Фото выбрано: {os.path.basename(f)}")
 
     def browse_photos(self):
         win = tk.Toplevel(self)
