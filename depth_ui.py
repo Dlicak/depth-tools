@@ -397,10 +397,7 @@ class DepthUI(tk.Tk):
         self._focus_x = int(cfg.get("focus_x", -1))
         self._focus_y = int(cfg.get("focus_y", -1))
 
-        self.prev_view.bind("<Button-1>", lambda _e: self.show_large(0))
         self.cur_view.bind("<Button-1>", self._cur_click)
-
-        self.bigwin = None
 
         self.bind("<Configure>", lambda _e: self._schedule_resize())
 
@@ -592,8 +589,6 @@ class DepthUI(tk.Tk):
     def _cur_click(self, e):
         if self.vars["focus_enable"].get():
             self._set_focus(e)
-            return
-        self.show_large(1)
 
     def _set_focus(self, e):
         scale = getattr(self.cur_view, "_disp_scale", None)
@@ -885,66 +880,6 @@ class DepthUI(tk.Tk):
         self._src_img = src.copy()
         self.show_pair()
 
-    def show_large(self, side_idx, auto=False):
-        img = self._all_images()[side_idx]
-        if img is None:
-            return
-        if self.bigwin is None or not self.bigwin.winfo_exists():
-            self.bigwin = tk.Toplevel(self)
-            self.bigwin.title("Просмотр")
-            self.bigwin.configure(bg="#1e1e1e")
-            self.big_canvas = tk.Canvas(self.bigwin, bg="#1e1e1e", highlightthickness=0)
-            self.big_canvas.pack(fill="both", expand=True)
-            self._big_scale = 1.0
-            self._big_item = self.big_canvas.create_image(0, 0, anchor="nw", image=self._big_photo if hasattr(self, "_big_photo") else None)
-            self.bigwin.bind("<Configure>", lambda _e: self._update_big())
-            self.bigwin.bind("<MouseWheel>", self._big_wheel)
-            self.bigwin.bind("<Button-4>", self._big_wheel)
-            self.bigwin.bind("<Button-5>", self._big_wheel)
-            self.big_canvas.bind("<MouseWheel>", self._big_wheel)
-            self.big_canvas.bind("<Button-4>", self._big_wheel)
-            self.big_canvas.bind("<Button-5>", self._big_wheel)
-            self.big_canvas.bind("<ButtonPress-2>", self._big_pan_start)
-            self.big_canvas.bind("<B2-Motion>", self._big_pan_move)
-            self.bigwin.protocol("WM_DELETE_WINDOW", lambda: self.bigwin.withdraw())
-        if auto:
-            self.bigwin.deiconify()
-        self._big_img = img.copy()
-        self._big_scale = 1.0
-        self._update_big()
-
-    def _big_wheel(self, e):
-        delta = e.delta if hasattr(e, "delta") else (0 if e.num == 0 else (-1 if e.num == 4 else 1))
-        step = delta / 120 if e.delta else delta
-        self._big_scale = max(0.05, min(40.0, self._big_scale * (1.1 ** step)))
-        self._update_big()
-
-    def _big_pan_start(self, e):
-        self._pan_x = e.x
-        self._pan_y = e.y
-
-    def _big_pan_move(self, e):
-        dx = e.x - self._pan_x
-        dy = e.y - self._pan_y
-        self._pan_x = e.x
-        self._pan_y = e.y
-        self.big_canvas.move(self._big_item, dx, dy)
-
-    def _update_big(self):
-        img = getattr(self, "_big_img", None)
-        if img is None or not self.bigwin.winfo_exists():
-            return
-        pw, ph = self.bigwin.winfo_width(), self.bigwin.winfo_height()
-        if pw < 10 or ph < 10:
-            return
-        fit = min(pw / img.width, ph / img.height)
-        scale = fit * self._big_scale
-        w, h = max(1, int(img.width * scale)), max(1, int(img.height * scale))
-        self._big_photo = ImageTk.PhotoImage(img.convert("RGB").resize((w, h), Image.LANCZOS))
-        self.big_canvas.itemconfigure(self._big_item, image=self._big_photo)
-        cx = pw / 2
-        cy = ph / 2
-        self.big_canvas.coords(self._big_item, cx - w / 2, cy - h / 2)
 
     def show_pair(self):
         prev, cur = self._all_images()
