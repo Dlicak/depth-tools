@@ -24,7 +24,6 @@ DEFAULTS = {
     "blur_strength": 6.0,
     "out_size": "300x300",
     "invert": False,
-    "merge_prev": False,
     "dof_near": False,
     "compress": False,
     "focus_enable": False,
@@ -268,24 +267,6 @@ def _linear_to_srgb(a):
                     1.055*np.power(np.clip(a, 1e-8, None), 1/2.4) - 0.055)
 
 
-def _exr_argb(path, w, h):
-    # альфа (глубина) + RGB (в sRGB) из цветного EXR, приведённые к w×h; иначе None
-    planes = _exr_planes(path)
-    if not planes or "A" not in planes:
-        return None, None
-    from PIL import Image as _I
-
-    def _rs(x):
-        im = _I.fromarray(np.clip(np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0), 0.0, 1.0))
-        return np.clip(np.asarray(im.resize((w, h), _I.LANCZOS), dtype=np.float32), 0.0, 1.0)
-
-    a = _rs(planes["A"])
-    rgb = None
-    if all(k in planes for k in ("R", "G", "B")):
-        rgb = np.stack([_rs(_linear_to_srgb(planes[k])) for k in ("R", "G", "B")], axis=-1)
-    return a, rgb
-
-
 def _exr_thumb(path, max_side=150):
     im = _exr_load_rgb(path)
     if im is None:
@@ -462,8 +443,6 @@ class DepthUI(tk.Tk):
         row.pack(fill="x")
         self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
         ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
-        self.vars["merge_prev"] = tk.BooleanVar(value=bool(cfg.get("merge_prev", False)))
-        ttk.Checkbutton(row, text="Смешать с прошлой картой (50/50)", variable=self.vars["merge_prev"]).pack(side="left", padx=10, pady=4)
         self.vars["dof_near"] = tk.BooleanVar(value=bool(cfg.get("dof_near", False)))
         ttk.Checkbutton(row, text="DoF: размывать близкое", variable=self.vars["dof_near"]).pack(side="left", padx=10, pady=4)
 
@@ -865,7 +844,6 @@ class DepthUI(tk.Tk):
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
         c["invert"] = bool(self.vars["invert"].get())
-        c["merge_prev"] = bool(self.vars["merge_prev"].get())
         c["dof_near"] = bool(self.vars["dof_near"].get())
         c["depth16"] = bool(self.vars["depth16"].get())
         c["depth32"] = bool(self.vars["depth32"].get())
@@ -979,30 +957,6 @@ class DepthUI(tk.Tk):
             w, h = [int(x) for x in out_size.split("x")]
             dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
 
-            merge_prev_rgb = None
-            if c.get("merge_prev"):
-                meta_p = f"{OUT}/.last_depth.json"
-                same = False
-                try:
-                    info = json.load(open(meta_p))
-                    fmt = "exr" if c.get("cmap_exr") else "png"
-                    same = (os.path.realpath(str(info.get("src", ""))) == os.path.realpath(c["src"])
-                            and str(info.get("fmt", "")) == fmt)
-                except Exception:
-                    same = False
-                prev = None
-                if same:
-                    # формат прошлой карты = формату выхода: EXR <-> EXR (ARGB целиком), иначе PNG
-                    if c.get("cmap_exr") and os.path.isfile(f"{OUT}/photo_colormap.exr"):
-                        prev, merge_prev_rgb = _exr_argb(f"{OUT}/photo_colormap.exr", w, h)
-                    elif not c.get("cmap_exr") and os.path.isfile(f"{OUT}/photo_depth.png"):
-                        prev = np.asarray(Image.open(f"{OUT}/photo_depth.png").convert("L").resize(
-                            (w, h), Image.LANCZOS), dtype=np.float32) / 255.0
-                if prev is not None:
-                    mn, mx = float(prev.min()), float(prev.max())
-                    prev = (prev - mn) / (mx - mn + 1e-8)
-                    dfloat = np.clip(dfloat * 0.5 + prev * 0.5, 0.0, 1.0)
-
             depth_out = Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB")
             img_out = img.convert("RGB").resize((w, h), Image.LANCZOS)
 
@@ -1013,11 +967,6 @@ class DepthUI(tk.Tk):
                 dfloat = _blur_f(dfloat, smooth)
 
             depth_out.save(f"{OUT}/photo_depth.png")
-            try:
-                json.dump({"src": c["src"], "fmt": "exr" if c.get("cmap_exr") else "png"},
-                          open(f"{OUT}/.last_depth.json", "w"))
-            except Exception:
-                pass
 
             if c["depth16"]:
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
@@ -1071,9 +1020,6 @@ class DepthUI(tk.Tk):
             side.save(f"{OUT}/photo_color_plus_depth.png")
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
-            if merge_prev_rgb is not None:
-                # смешиваем и цвет прошлой карты (50/50), не только глубину
-                crgb = np.clip(crgb * 0.5 + merge_prev_rgb * 0.5, 0.0, 1.0)
             Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap.png")
             if c["depth16"]:
                 png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
