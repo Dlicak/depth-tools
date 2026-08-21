@@ -16,7 +16,6 @@ SRC = common.default_src()
 
 DEFAULTS = {
     "model": "small",
-    "input_size": 1024,
     "depth_gamma": 1.0,
     "depth_lo": 0.0,
     "depth_hi": 100.0,
@@ -47,6 +46,35 @@ if os.path.exists(CONFIG):
         pass
 
 STATE = {"busy": False}
+
+
+MODEL_URLS = {
+    "small": "depth_anything_v2_vits_dynamic.onnx",
+    "base": "depth_anything_v2_vitb_dynamic.onnx",
+    "large": "depth_anything_v2_vitl_dynamic.onnx",
+}
+
+
+def download_model(key, dst):
+    import urllib.request
+    url = ("https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/"
+           + MODEL_URLS[key])
+    os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+    tmp = dst + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": "depth-tools"})
+    with urllib.request.urlopen(req) as r, open(tmp, "wb") as f:
+        total = int(r.headers.get("Content-Length", 0))
+        done = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if total:
+                pct = done * 100 // total
+                print(f"\r{done // (1024 * 1024)}/{total // (1024 * 1024)} МБ ({pct}%)", end="", flush=True)
+    os.replace(tmp, dst)
 
 
 def open_path(path):
@@ -254,6 +282,18 @@ class DepthUI(tk.Tk):
         self.var_src = tk.StringVar(value=SRC)
         ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
         ttk.Button(row, text="Поиск фото", command=self.browse_photos).pack(side="left", padx=10, pady=4)
+
+        # --- модель ---
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        ttk.Label(row, text="Модель:", width=15).pack(side="left", **pad)
+        _m = str(cfg.get("model", "small")).lower()
+        if _m not in ("small", "base", "large"):
+            _m = "small"
+        self.vars["model"] = tk.StringVar(value=_m.capitalize())
+        ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large"],
+                     width=10, state="readonly").pack(side="left", padx=10, pady=4)
+        ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
         # --- slider helpers: 2 колонки (левая/правая) ---
         slider_grid = ttk.Frame(self)
@@ -618,7 +658,7 @@ class DepthUI(tk.Tk):
 
     def collect(self):
         c = dict(cfg)
-        c["model"] = "small"
+        c["model"] = self.vars["model"].get().lower()
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         src_img = Image.open(c["src"]).convert("RGB")
@@ -665,11 +705,10 @@ class DepthUI(tk.Tk):
         try:
             model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
             if not os.path.exists(model):
-                raise FileNotFoundError(
-                    f"Модель не найдена: {model}\n"
-                    f"Запустите `python download_model.py` или скачайте вручную:\n"
-                    "https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/"
-                    "depth_anything_v2_vits_dynamic.onnx")
+                self.after(0, lambda: self.lbl_status.configure(
+                    text=f"Скачивание модели {c['model'].capitalize()}..."))
+                download_model(c["model"], model)
+                self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
             img = Image.open(c["src"]).convert("RGB")
             div = int("".join(ch for ch in str(c.get("src_div", 1)) if ch.isdigit()) or 1)
             if div > 1:
