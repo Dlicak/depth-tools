@@ -262,16 +262,28 @@ def _exr_load_rgb(path):
     return _I.fromarray((np.clip(srgb, 0.0, 1.0)*255).astype(np.uint8)).convert("RGB")
 
 
-def _exr_alpha(path, w, h):
-    # альфа-канал EXR (глубина), приведённый к размеру w×h; иначе None
+def _linear_to_srgb(a):
+    a = np.clip(a, 0.0, 1.0)
+    return np.where(a <= 0.0031308, a*12.92,
+                    1.055*np.power(np.clip(a, 1e-8, None), 1/2.4) - 0.055)
+
+
+def _exr_argb(path, w, h):
+    # альфа (глубина) + RGB (в sRGB) из цветного EXR, приведённые к w×h; иначе None
     planes = _exr_planes(path)
     if not planes or "A" not in planes:
-        return None
-    a = np.nan_to_num(planes["A"], nan=0.0, posinf=0.0, neginf=0.0)
+        return None, None
     from PIL import Image as _I
-    im = _I.fromarray(np.clip(a, 0.0, 1.0))
-    a = np.asarray(im.resize((w, h), _I.LANCZOS), dtype=np.float32)
-    return np.clip(a, 0.0, 1.0)
+
+    def _rs(x):
+        im = _I.fromarray(np.clip(np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0), 0.0, 1.0))
+        return np.clip(np.asarray(im.resize((w, h), _I.LANCZOS), dtype=np.float32), 0.0, 1.0)
+
+    a = _rs(planes["A"])
+    rgb = None
+    if all(k in planes for k in ("R", "G", "B")):
+        rgb = np.stack([_rs(_linear_to_srgb(planes[k])) for k in ("R", "G", "B")], axis=-1)
+    return a, rgb
 
 
 def _exr_thumb(path, max_side=150):
@@ -967,6 +979,7 @@ class DepthUI(tk.Tk):
             w, h = [int(x) for x in out_size.split("x")]
             dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
 
+            merge_prev_rgb = None
             if c.get("merge_prev"):
                 meta_p = f"{OUT}/.last_depth.json"
                 same = False
@@ -979,9 +992,9 @@ class DepthUI(tk.Tk):
                     same = False
                 prev = None
                 if same:
-                    # формат прошлой карты = формату выхода: EXR <-> EXR, иначе PNG
+                    # формат прошлой карты = формату выхода: EXR <-> EXR (ARGB целиком), иначе PNG
                     if c.get("cmap_exr") and os.path.isfile(f"{OUT}/photo_colormap.exr"):
-                        prev = _exr_alpha(f"{OUT}/photo_colormap.exr", w, h)
+                        prev, merge_prev_rgb = _exr_argb(f"{OUT}/photo_colormap.exr", w, h)
                     elif not c.get("cmap_exr") and os.path.isfile(f"{OUT}/photo_depth.png"):
                         prev = np.asarray(Image.open(f"{OUT}/photo_depth.png").convert("L").resize(
                             (w, h), Image.LANCZOS), dtype=np.float32) / 255.0
@@ -1058,6 +1071,9 @@ class DepthUI(tk.Tk):
             side.save(f"{OUT}/photo_color_plus_depth.png")
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
+            if merge_prev_rgb is not None:
+                # смешиваем и цвет прошлой карты (50/50), не только глубину
+                crgb = np.clip(crgb * 0.5 + merge_prev_rgb * 0.5, 0.0, 1.0)
             Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap.png")
             if c["depth16"]:
                 png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
