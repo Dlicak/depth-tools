@@ -31,7 +31,7 @@ DEFAULTS = {
     "focus_width": 25.0,
     "depth16": False,
     "depth32": False,
-    "src_max": 0,
+    "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
 }
@@ -257,13 +257,16 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="Эконом ОЗУ", variable=self.vars["compress"],
                         command=self._update_input_range).pack(side="left", padx=25, pady=2)
 
-        # --- сжать оригинал до заданного размера ---
+        # --- сжать оригинал: делитель 1x-4x ---
         row = ttk.Frame(self)
         row.pack(fill="x")
         ttk.Label(row, text="Сжать оригинал до:").pack(side="left", **pad)
-        self.vars["src_max"] = tk.StringVar(value=f"{cfg.get('src_max', 0)}px")
+        _sd = str(cfg.get("src_div", "1x"))
+        if _sd not in ("1x", "2x", "3x", "4x"):
+            _sd = "1x"
+        self.vars["src_max"] = tk.StringVar(value=_sd)
         ttk.Combobox(row, textvariable=self.vars["src_max"],
-                     values=["0px (нет)", "256px", "384px", "512px", "768px", "1024px"],
+                     values=["1x", "2x", "3x", "4x"],
                      width=10, state="readonly").pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
@@ -285,12 +288,9 @@ class DepthUI(tk.Tk):
         row = ttk.Frame(self)
         row.pack(fill="x")
         ttk.Label(row, text="Размер выхода:").pack(side="left", **pad)
-        _om = str(cfg.get("out_mult", "2x"))
-        if _om not in ("2x", "3x", "4x"):
-            _om = "2x"
-        self.vars["out_mult"] = tk.StringVar(value=_om)
+        self.vars["out_mult"] = tk.StringVar(value=str(cfg.get("out_mult", "1x")))
         cmb = ttk.Combobox(row, textvariable=self.vars["out_mult"],
-                           values=["2x", "3x", "4x"], width=8, state="readonly")
+                           values=["1x", "2x", "3x", "4x"], width=8, state="readonly")
         cmb.pack(side="left", padx=10, pady=4)
 
         # --- кнопки ---
@@ -579,11 +579,10 @@ class DepthUI(tk.Tk):
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         src_img = Image.open(c["src"]).convert("RGB")
-        max_side = int("".join(ch for ch in str(self.vars["src_max"].get()) if ch.isdigit()) or 0)
-        c["src_max"] = max_side
-        if max_side and max(src_img.width, src_img.height) > max_side:
-            s = max_side / max(src_img.width, src_img.height)
-            src_img = src_img.resize((max(1, int(src_img.width * s)), max(1, int(src_img.height * s))), Image.LANCZOS)
+        div = int("".join(ch for ch in str(self.vars["src_max"].get()) if ch.isdigit()) or 1)
+        c["src_div"] = div
+        if div > 1:
+            src_img = src_img.resize((max(1, src_img.width // div), max(1, src_img.height // div)), Image.LANCZOS)
         orig_w, orig_h = src_img.width, src_img.height
         if self.vars["compress"].get():
             scale = (200 * mult) / max(src_img.width, src_img.height)
@@ -628,10 +627,9 @@ class DepthUI(tk.Tk):
                     "https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/"
                     "depth_anything_v2_vits_dynamic.onnx")
             img = Image.open(c["src"]).convert("RGB")
-            max_side = int(c.get("src_max", 0) or 0)
-            if max_side and max(img.width, img.height) > max_side:
-                s = max_side / max(img.width, img.height)
-                img = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
+            div = int("".join(ch for ch in str(c.get("src_div", 1)) if ch.isdigit()) or 1)
+            if div > 1:
+                img = img.resize((max(1, img.width // div), max(1, img.height // div)), Image.LANCZOS)
             dn = float(c.get("denoise", 0) or 0)
             if dn > 0:
                 arr = np.asarray(img, dtype=np.float32) / 255.0
