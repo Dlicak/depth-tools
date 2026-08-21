@@ -247,15 +247,15 @@ class DepthUI(tk.Tk):
         self._input_lbl = ttk.Label(row, text=f"{self.vars['input_mult'].get():.0f}", width=8)
         self._input_lbl.pack(side="left", padx=10)
         self.vars["compress"] = tk.BooleanVar(value=bool(cfg.get("compress", False)))
-        self._ram_hint = ttk.Label(self, text="", foreground="#e06666")
-        self._ram_hint.pack(fill="x", padx=25, pady=(0, 2))
-        self._update_input_range()
 
         # --- эконом ОЗУ: под множителем ---
         row = ttk.Frame(self)
         row.pack(fill="x")
         ttk.Checkbutton(row, text="Эконом ОЗУ", variable=self.vars["compress"],
                         command=self._update_input_range).pack(side="left", padx=25, pady=2)
+        self._ram_hint = ttk.Label(self, text="", foreground="#e06666")
+        self._ram_hint.pack(fill="x", padx=25, pady=(0, 2))
+        self._update_input_range()
 
         # --- сжать оригинал: делитель 1x-4x ---
         row = ttk.Frame(self)
@@ -300,7 +300,6 @@ class DepthUI(tk.Tk):
         self.btn_run.pack(side="left", padx=10)
         ttk.Button(row, text="Открыть папку", command=self.open_folder).pack(side="left", padx=10)
         self.var_autobig = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row, text="Крупное окно автоматически", variable=self.var_autobig).pack(side="left", padx=10)
         self.lbl_status = ttk.Label(row, text="Готово. Нажми Применить")
         self.lbl_status.pack(side="left", padx=10)
 
