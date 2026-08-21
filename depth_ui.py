@@ -240,7 +240,8 @@ def _exr_load_rgb(path):
             for y in range(h):
                 o = offs[y] + 8 + ci*w*2
                 row = np.frombuffer(d[o:o+w*2], dtype="<f2").astype(np.float32)
-                arr[y if dec else h-1-y] = row
+                # DECREASING_Y: чанк 0 = нижняя строка файла
+                arr[h-1-y if dec else y] = row
             planes[nm] = arr
         if "R" not in planes:
             return None
@@ -352,7 +353,7 @@ class DepthUI(tk.Tk):
         ttk.Label(row, text="Фото:").pack(side="left", **pad)
         self.var_src = tk.StringVar(value=SRC)
         ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        ttk.Button(row, text="Поиск фото", command=self.browse_photos).pack(side="left", padx=10, pady=4)
+        ttk.Button(row, text="Поиск фото", command=self.pick_src).pack(side="left", padx=10, pady=4)
 
         # --- модель ---
         row = ttk.Frame(self)
