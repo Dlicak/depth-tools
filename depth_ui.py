@@ -371,7 +371,7 @@ class DepthUI(tk.Tk):
         ttk.Label(row, text="Фото:").pack(side="left", **pad)
         self.var_src = tk.StringVar(value=SRC)
         ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        ttk.Button(row, text="Поиск фото", command=self.pick_src).pack(side="left", padx=10, pady=4)
+        ttk.Button(row, text="Поиск фото", command=self.browse_photos).pack(side="left", padx=10, pady=4)
 
         # --- модель ---
         row = ttk.Frame(self)
@@ -545,33 +545,6 @@ class DepthUI(tk.Tk):
 
         self.bind("<Configure>", lambda _e: self._schedule_resize())
 
-    def pick_src(self):
-        import subprocess
-        start = self.var_src.get().strip()
-        initdir = os.path.dirname(start)
-        cmd = ["zenity", "--file-selection", "--title=Выбор фото",
-               "--file-filter=Изображения | *.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff *.exr",
-               "--file-filter=Все файлы | *"]
-        if start and os.path.isfile(start):
-            cmd.append(f"--filename={start}")
-        elif initdir and os.path.isdir(initdir):
-            cmd.append(f"--filename={initdir}/")
-        else:
-            cmd.append(f"--filename={os.path.join(common.home_dir(), 'Pictures')}/")
-        f = None
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-            if r.returncode == 0:
-                f = r.stdout.strip()
-        except Exception:
-            f = None
-        if not f:
-            f = filedialog.askopenfilename(
-                filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.exr"), ("All", "*.*")])
-        if f:
-            self.var_src.set(f)
-            self.lbl_status.configure(text=f"Фото выбрано: {os.path.basename(f)}")
-
     def browse_photos(self):
         win = tk.Toplevel(self)
         win.title("Поиск фото")
@@ -588,8 +561,11 @@ class DepthUI(tk.Tk):
 
         top = tk.Frame(win, bg="#1e1e1e")
         top.pack(fill="x", padx=8, pady=6)
-        var_fold = tk.StringVar(value="Downloads")
-        ttk.Combobox(top, textvariable=var_fold, values=list(folders), width=12, state="readonly").pack(side="left")
+        folder_names = list(folders.keys()) + ["Другая папка..."]
+        var_fold = tk.StringVar(value="Pictures")
+        ttk.Combobox(top, textvariable=var_fold, values=folder_names, width=16, state="readonly").pack(side="left")
+        var_folder_lbl = tk.StringVar()
+        ttk.Label(top, textvariable=var_folder_lbl, foreground="#aaa").pack(side="left", padx=(4, 0))
         var_search = tk.StringVar()
         ttk.Entry(top, textvariable=var_search).pack(side="left", fill="x", expand=True, padx=8)
 
@@ -695,6 +671,8 @@ class DepthUI(tk.Tk):
                             pass
                 self.after(0, lambda p=path, im=im: self._set_thumb(p, im, tile_refs, load_gen))
 
+        custom_folder = {"path": None}
+
         def refresh(*_a):
             load_gen[0] += 1
             gen = load_gen[0]
@@ -702,7 +680,20 @@ class DepthUI(tk.Tk):
                 w.destroy()
             tiles.clear()
             tile_refs.clear()
-            folder = folders[var_fold.get()]
+            chosen = var_fold.get()
+            if chosen == "Другая папка...":
+                folder = custom_folder["path"]
+                if not folder or not os.path.isdir(folder):
+                    import tkinter.filedialog as fd
+                    folder = fd.askdirectory(initialdir=common.home_dir(), title="Выберите папку с фото")
+                    if not folder:
+                        var_fold.set("Pictures")
+                        return
+                    custom_folder["path"] = folder
+                    var_folder_lbl.set(os.path.basename(folder))
+            else:
+                folder = folders[chosen]
+            win.title(f"Поиск фото — {os.path.basename(folder)}")
             q = var_search.get().strip().lower()
             try:
                 files = sorted(os.listdir(folder), reverse=True)
