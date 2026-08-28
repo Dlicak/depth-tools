@@ -371,7 +371,7 @@ class DepthUI(tk.Tk):
         ttk.Label(row, text="Фото:").pack(side="left", **pad)
         self.var_src = tk.StringVar(value=SRC)
         ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        ttk.Button(row, text="Поиск фото", command=self.browse_photos).pack(side="left", padx=10, pady=4)
+        ttk.Button(row, text="Поиск фото", command=self.pick_src).pack(side="left", padx=10, pady=4)
 
         # --- модель ---
         row = ttk.Frame(self)
@@ -544,6 +544,48 @@ class DepthUI(tk.Tk):
         self.cur_view.bind("<Button-1>", self._cur_click)
 
         self.bind("<Configure>", lambda _e: self._schedule_resize())
+
+    def pick_src(self):
+        import subprocess
+        start = self.var_src.get().strip()
+        initdir = os.path.dirname(start)
+        f = None
+        if os.name == "nt":
+            f = filedialog.askopenfilename(
+                parent=self,
+                title="Выберите фото",
+                initialdir=initdir if os.path.isdir(initdir) else common.home_dir(),
+                filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff *.exr"),
+                           ("All Files", "*.*")],
+            )
+        else:
+            cmd = ["zenity", "--file-selection", "--title=Выбор фото",
+                   "--file-filter=Изображения | *.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff *.exr",
+                   "--file-filter=Все файлы | *"]
+            if start and os.path.isfile(start):
+                cmd.append(f"--filename={start}")
+            elif initdir and os.path.isdir(initdir):
+                cmd.append(f"--filename={initdir}/")
+            else:
+                cmd.append(f"--filename={os.path.join(common.home_dir(), 'Pictures')}/")
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode == 0:
+                    f = r.stdout.strip()
+            except FileNotFoundError:
+                f = filedialog.askopenfilename(
+                    parent=self,
+                    title="Выберите фото",
+                    initialdir=initdir if os.path.isdir(initdir) else common.home_dir(),
+                    filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff *.exr"),
+                               ("All Files", "*.*")],
+                )
+            except Exception:
+                f = None
+        if f:
+            self.var_src.set(f)
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.configure(text=f"Фото выбрано: {os.path.basename(f)}")
 
     def browse_photos(self):
         win = tk.Toplevel(self)
