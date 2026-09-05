@@ -35,6 +35,7 @@ DEFAULTS = {
     "depth32": False,
     "depth_exr": False,
     "cmap_exr": False,
+    "normal_png": False,
     "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
@@ -472,6 +473,9 @@ class DepthUI(tk.Tk):
         self.vars["cmap_exr"] = tk.BooleanVar(value=bool(cfg.get("cmap_exr", False)))
         ttk.Checkbutton(row, text="Цветная карта глубины (EXR)",
                         variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
+        self.vars["normal_png"] = tk.BooleanVar(value=bool(cfg.get("normal_png", False)))
+        ttk.Checkbutton(row, text="Карта нормалей (EXR)",
+                        variable=self.vars["normal_png"]).pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -902,6 +906,7 @@ class DepthUI(tk.Tk):
         c["depth32"] = bool(self.vars["depth32"].get())
         c["depth_exr"] = bool(self.vars["depth_exr"].get())
         c["cmap_exr"] = bool(self.vars["cmap_exr"].get())
+        c["normal_png"] = bool(self.vars["normal_png"].get())
         c["focus_enable"] = bool(self.vars["focus_enable"].get())
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
@@ -1130,6 +1135,16 @@ class DepthUI(tk.Tk):
                     _srgb_to_linear(crgb).astype(np.float32),
                     np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
+
+            if c.get("normal_png"):
+                # карта нормалей из карты глубины: цвет как у matcap
+                # check_normal+y (X=R, Y=G, Z=B, плоскость лицом к камере = +Z=синий)
+                d = np.clip(dfloat, 0.0, 1.0).astype(np.float32)
+                gy, gx = np.gradient(d)
+                n = np.stack([-gx, -gy, np.ones_like(d)], axis=-1).astype(np.float32)
+                ln = np.linalg.norm(n, axis=-1, keepdims=True)
+                n = n / np.maximum(ln, 1e-6)
+                write_exr(f"{OUT}/photo_normal.exr", n * 0.5 + 0.5)
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
                 # первый рендер не пропадает: сохраняем его отдельно
