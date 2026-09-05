@@ -468,8 +468,9 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
         self.vars["depth32"] = tk.BooleanVar(value=bool(cfg.get("depth32", False)))
         ttk.Checkbutton(row, text="32-бит float (TIFF)", variable=self.vars["depth32"]).pack(side="left", padx=10, pady=4)
-        self.vars["depth_exr"] = tk.BooleanVar(value=bool(cfg.get("depth_exr", False)))
-        ttk.Checkbutton(row, text="EXR float", variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
+        self.vars["depth_exr"] = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row, text="Бело-чёрная глубина (EXR, всегда)",
+                        variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
         self.vars["cmap_exr"] = tk.BooleanVar(value=bool(cfg.get("cmap_exr", False)))
         ttk.Checkbutton(row, text="Цветная карта глубины (EXR)",
                         variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
@@ -1048,14 +1049,14 @@ class DepthUI(tk.Tk):
                 depth_out = depth_out.filter(ImageFilter.GaussianBlur(smooth))
                 dfloat = _blur_f(dfloat, smooth)
 
-            depth_out.save(f"{OUT}/photo_depth.png")
-
+            write_exr(f"{OUT}/photo_depth.exr", np.clip(dfloat, 0.0, 1.0).astype(np.float32))
+            # исходное фото всегда сохраняем в EXR (float linear RGB) — для цвета меша
+            write_exr(f"{OUT}/photo_src.exr",
+                      _srgb_to_linear(np.asarray(img_out, dtype=np.float32) / 255.0))
             if c["depth16"]:
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
             if c.get("depth32"):
                 Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
-            if c.get("depth_exr"):
-                write_exr(f"{OUT}/photo_depth.exr", dfloat)
             deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
             overlay.save(f"{OUT}/photo_depth_overlay.png")
@@ -1145,6 +1146,10 @@ class DepthUI(tk.Tk):
                 ln = np.linalg.norm(n, axis=-1, keepdims=True)
                 n = n / np.maximum(ln, 1e-6)
                 write_exr(f"{OUT}/photo_normal.exr", n * 0.5 + 0.5)
+
+            # исходное цветное фото в EXR (float linear) — для качества в меше
+            _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
+            write_exr(f"{OUT}/photo_src.exr", _srgb_to_linear(np.clip(_i, 0.0, 1.0)).astype(np.float32))
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
                 # первый рендер не пропадает: сохраняем его отдельно
