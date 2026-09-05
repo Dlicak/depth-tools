@@ -1059,7 +1059,6 @@ class DepthUI(tk.Tk):
                 Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
             deep = bool(c.get("depth16")) or bool(c.get("depth32"))
             overlay = Image.blend(img_out, depth_out, c["overlay_alpha"])
-            overlay.save(f"{OUT}/photo_depth_overlay.png")
             rel_map = None
             dfl = None
             dl = np.clip(dfloat, 0.0, 1.0)
@@ -1089,7 +1088,6 @@ class DepthUI(tk.Tk):
                         m = 1.0 - dl
                         b = _blur_f(dl, max(1.0, float(c["blur_strength"]) * 3))
                         dfl = b * m + dl * (1 - m)
-            dof.save(f"{OUT}/photo_dof.png")
             if dfl is not None:
                 Image.fromarray((np.clip(dfl, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_dof_16.png")
                 if c.get("depth32"):
@@ -1100,7 +1098,6 @@ class DepthUI(tk.Tk):
             side = Image.new("RGB", (w * 2 + 10, h), (40, 40, 40))
             side.paste(a, (0, 0))
             side.paste(b, (w + 10, 0))
-            side.save(f"{OUT}/photo_color_plus_depth.png")
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
             hp = self.__dict__.get("_hybrid_prev")
