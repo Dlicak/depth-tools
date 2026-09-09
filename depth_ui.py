@@ -330,18 +330,26 @@ def write_ply(path, dfloat, img_rgb, fov_y=90.0):
     Y = (-(ys - cy) * z / fy).reshape(-1)
     rgb = np.asarray(img_rgb.convert("RGB"), dtype=np.uint8).reshape(-1, 3)
     n = d.size
+    faces = []
+    for i in range(h - 1):
+        for j in range(w - 1):
+            a = i * w + j
+            faces.append((a, a + 1, a + w + 1, a + w))
     with open(path, "w") as f:
         f.write(
             "ply\nformat ascii 1.0\nelement vertex %d\n"
             "property float x\nproperty float y\nproperty float z\n"
             "property uchar red\nproperty uchar green\nproperty uchar blue\n"
-            "end_header\n" % n
+            "element face %d\nproperty list uchar int vertex_indices\n"
+            "end_header\n" % (n, len(faces))
         )
         np.savetxt(
             f,
             np.column_stack([X, Y, z.reshape(-1), rgb[:, 0], rgb[:, 1], rgb[:, 2]]),
             fmt="%.6f %.6f %.6f %d %d %d",
         )
+        for fc in faces:
+            f.write("4 %d %d %d %d\n" % fc)
 
 
 def _box_f(a, r):
