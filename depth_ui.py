@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import threading
 import tkinter as tk
@@ -36,6 +37,7 @@ DEFAULTS = {
     "depth_exr": False,
     "cmap_exr": False,
     "normal_png": False,
+    "ply_out": False,
     "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
@@ -316,6 +318,32 @@ def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
     return Image.fromarray((shade * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(r * 0.5))
 
 
+def write_ply(path, dfloat, img_rgb, fov_y=90.0):
+    d = np.clip(np.asarray(dfloat, dtype=np.float32), 0.0, 1.0)
+    h, w = d.shape
+    z = np.clip(d, 0.05, 1.0)
+    cx = (w - 1) / 2.0
+    cy = (h - 1) / 2.0
+    fy = (h / 2.0) / math.tan(math.radians(fov_y / 2.0))
+    ys, xs = np.mgrid[0:h, 0:w]
+    X = ((xs - cx) * z / fy).reshape(-1)
+    Y = (-(ys - cy) * z / fy).reshape(-1)
+    rgb = np.asarray(img_rgb.convert("RGB"), dtype=np.uint8).reshape(-1, 3)
+    n = d.size
+    with open(path, "w") as f:
+        f.write(
+            "ply\nformat ascii 1.0\nelement vertex %d\n"
+            "property float x\nproperty float y\nproperty float z\n"
+            "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+            "end_header\n" % n
+        )
+        np.savetxt(
+            f,
+            np.column_stack([X, Y, z.reshape(-1), rgb[:, 0], rgb[:, 1], rgb[:, 2]]),
+            fmt="%.6f %.6f %.6f %d %d %d",
+        )
+
+
 def _box_f(a, r):
     ri = max(0, int(round(r)))
     a = np.ascontiguousarray(a, dtype=np.float64)
@@ -477,6 +505,9 @@ class DepthUI(tk.Tk):
         self.vars["normal_png"] = tk.BooleanVar(value=bool(cfg.get("normal_png", False)))
         ttk.Checkbutton(row, text="Карта нормалей (EXR)",
                         variable=self.vars["normal_png"]).pack(side="left", padx=10, pady=4)
+        self.vars["ply_out"] = tk.BooleanVar(value=bool(cfg.get("ply_out", False)))
+        ttk.Checkbutton(row, text="XYZ-облако (PLY)",
+                        variable=self.vars["ply_out"]).pack(side="left", padx=10, pady=4)
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -908,6 +939,7 @@ class DepthUI(tk.Tk):
         c["depth_exr"] = bool(self.vars["depth_exr"].get())
         c["cmap_exr"] = bool(self.vars["cmap_exr"].get())
         c["normal_png"] = bool(self.vars["normal_png"].get())
+        c["ply_out"] = bool(self.vars["ply_out"].get())
         c["focus_enable"] = bool(self.vars["focus_enable"].get())
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
@@ -1147,6 +1179,12 @@ class DepthUI(tk.Tk):
             # исходное цветное фото в EXR (float linear) — для качества в меше
             _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
             write_exr(f"{OUT}/photo_src.exr", _srgb_to_linear(np.clip(_i, 0.0, 1.0)).astype(np.float32))
+
+            if c.get("ply_out"):
+                try:
+                    write_ply(f"{OUT}/photo_points.ply", dfloat, img_out)
+                except Exception as e:
+                    print("ply error:", e)
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
                 # первый рендер не пропадает: сохраняем его отдельно
