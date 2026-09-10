@@ -38,6 +38,9 @@ DEFAULTS = {
     "cmap_exr": False,
     "normal_png": False,
     "ply_out": False,
+    "glb_out": False,
+    "ply_fov": 90,
+    "ply_scale": 1.0,
     "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
@@ -318,23 +321,35 @@ def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
     return Image.fromarray((shade * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(r * 0.5))
 
 
-def write_ply(path, dfloat, img_rgb, fov_y=90.0):
+def _points_field(dfloat, img_rgb, fov_y=90.0, scale=1.0):
     d = np.clip(np.asarray(dfloat, dtype=np.float32), 0.0, 1.0)
     h, w = d.shape
-    z = np.clip(d, 0.05, 1.0)
+    z = np.clip(d, 0.05, 1.0) * float(scale)
     cx = (w - 1) / 2.0
     cy = (h - 1) / 2.0
-    fy = (h / 2.0) / math.tan(math.radians(fov_y / 2.0))
+    fy = (h / 2.0) / math.tan(math.radians(max(1.0, float(fov_y)) / 2.0))
     ys, xs = np.mgrid[0:h, 0:w]
-    X = ((xs - cx) * z / fy).reshape(-1)
-    Y = (-(ys - cy) * z / fy).reshape(-1)
+    X = ((xs - cx) * z / fy)
+    Y = (-(ys - cy) * z / fy)
     rgb = np.asarray(img_rgb.convert("RGB"), dtype=np.uint8).reshape(-1, 3)
-    n = d.size
+    return X.reshape(-1), Y.reshape(-1), z.reshape(-1), rgb
+
+
+def _grid_faces(w, h):
     faces = []
     for i in range(h - 1):
+        base = i * w
         for j in range(w - 1):
-            a = i * w + j
+            a = base + j
             faces.append((a, a + 1, a + w + 1, a + w))
+    return faces
+
+
+def write_ply(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
+    X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
+    h, w = np.asarray(dfloat).shape[:2]
+    n = X.size
+    faces = _grid_faces(w, h)
     with open(path, "w") as f:
         f.write(
             "ply\nformat ascii 1.0\nelement vertex %d\n"
@@ -345,11 +360,79 @@ def write_ply(path, dfloat, img_rgb, fov_y=90.0):
         )
         np.savetxt(
             f,
-            np.column_stack([X, Y, z.reshape(-1), rgb[:, 0], rgb[:, 1], rgb[:, 2]]),
+            np.column_stack([X, Y, z, rgb[:, 0], rgb[:, 1], rgb[:, 2]]),
             fmt="%.6f %.6f %.6f %d %d %d",
         )
         for fc in faces:
             f.write("4 %d %d %d %d\n" % fc)
+
+
+def write_glb(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
+    import struct
+    X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
+    h, w = dfloat.shape[0], dfloat.shape[1]
+    n = X.size
+    pos = np.stack([X, Y, z], axis=-1).astype(np.float32)
+    lcol = ((rgb / 255.0) ** 2.2).astype(np.float32)
+    col = np.concatenate([lcol, np.ones((n, 1), dtype=np.float32)], axis=-1)
+    faces = []
+    for i in range(h - 1):
+        base = i * w
+        for j in range(w - 1):
+            a = base + j
+            faces.append((a, a + 1, a + w + 1))
+            faces.append((a, a + w + 1, a + w))
+    idx = np.asarray(faces, dtype=np.uint32).reshape(-1)
+    v0, v1, v2 = pos[idx[0::3]], pos[idx[1::3]], pos[idx[2::3]]
+    nrm = np.cross(v1 - v0, v2 - v0)
+    nl = np.linalg.norm(nrm, axis=-1, keepdims=True)
+    nrm = (nrm / np.maximum(nl, 1e-12)).astype(np.float32)
+    vn = np.zeros_like(pos)
+    np.add.at(vn, idx[0::3], nrm)
+    np.add.at(vn, idx[1::3], nrm)
+    np.add.at(vn, idx[2::3], nrm)
+    nl2 = np.linalg.norm(vn, axis=-1, keepdims=True)
+    vn = (vn / np.maximum(nl2, 1e-12)).astype(np.float32)
+    ib = idx.tobytes()
+    pb = pos.tobytes()
+    nb = vn.tobytes()
+    cb = col.tobytes()
+    ib = ib + b"\x00" * (-len(ib) % 4)
+    bin_ = ib + pb + nb + cb
+    i_off, p_off, n_off, c_off = 0, len(ib), len(ib) + len(pb), len(ib) + len(pb) + len(nb)
+    acc = [
+        {"bufferView": 0, "componentType": 5125, "count": idx.size, "type": "SCALAR"},
+        {"bufferView": 1, "componentType": 5126, "count": n, "type": "VEC3",
+         "min": pos.min(0).tolist(), "max": pos.max(0).tolist()},
+        {"bufferView": 2, "componentType": 5126, "count": n, "type": "VEC3"},
+        {"bufferView": 3, "componentType": 5126, "count": n, "type": "VEC4"},
+    ]
+    bv = [
+        {"buffer": 0, "byteOffset": i_off, "byteLength": len(ib), "target": 34963},
+        {"buffer": 0, "byteOffset": p_off, "byteLength": len(pb), "target": 34962},
+        {"buffer": 0, "byteOffset": n_off, "byteLength": len(nb), "target": 34962},
+        {"buffer": 0, "byteOffset": c_off, "byteLength": len(cb), "target": 34962},
+    ]
+    doc = {
+        "asset": {"version": "2.0", "generator": "depth-tools"},
+        "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0, "name": "photo_points"}],
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 1, "NORMAL": 2, "COLOR_0": 3},
+            "indices": 0, "mode": 4}]}],
+        "buffers": [{"byteLength": len(bin_), "uri": "data:..."}],
+        "bufferViews": bv,
+        "accessors": acc,
+    }
+    doc["buffers"][0].pop("uri")
+    json_ = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    json_ = json_ + b"\x20" * (-len(json_) % 4)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(json_) + 8 + len(bin_)))
+        f.write(struct.pack("<II", len(json_), 0x4E4F534A))
+        f.write(json_)
+        f.write(struct.pack("<II", len(bin_), 0x004E4942))
+        f.write(bin_)
 
 
 def _box_f(a, r):
@@ -516,6 +599,18 @@ class DepthUI(tk.Tk):
         self.vars["ply_out"] = tk.BooleanVar(value=bool(cfg.get("ply_out", False)))
         ttk.Checkbutton(row, text="XYZ-облако (PLY)",
                         variable=self.vars["ply_out"]).pack(side="left", padx=10, pady=4)
+        self.vars["glb_out"] = tk.BooleanVar(value=bool(cfg.get("glb_out", False)))
+        ttk.Checkbutton(row, text="Модель 3D (GLB)",
+                        variable=self.vars["glb_out"]).pack(side="left", padx=10, pady=4)
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        ttk.Label(row, text="FOV PLY:").pack(side="left", padx=5, pady=4)
+        self.vars["ply_fov"] = tk.StringVar(value=str(cfg.get("ply_fov", 90)))
+        ttk.Spinbox(row, from_=20, to=170, width=6, textvariable=self.vars["ply_fov"]).pack(side="left")
+        ttk.Label(row, text="Масштаб PLY:").pack(side="left", padx=5, pady=4)
+        self.vars["ply_scale"] = tk.StringVar(value=str(cfg.get("ply_scale", 1.0)))
+        ttk.Spinbox(row, from_=0.1, to=20, increment=0.1, width=6,
+                    textvariable=self.vars["ply_scale"]).pack(side="left")
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -948,6 +1043,15 @@ class DepthUI(tk.Tk):
         c["cmap_exr"] = bool(self.vars["cmap_exr"].get())
         c["normal_png"] = bool(self.vars["normal_png"].get())
         c["ply_out"] = bool(self.vars["ply_out"].get())
+        c["glb_out"] = bool(self.vars["glb_out"].get())
+        try:
+            c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
+        except ValueError:
+            c["ply_fov"] = 90.0
+        try:
+            c["ply_scale"] = float(str(self.vars["ply_scale"].get()).replace(",", "."))
+        except ValueError:
+            c["ply_scale"] = 1.0
         c["focus_enable"] = bool(self.vars["focus_enable"].get())
         c["focus_width"] = float(self.vars["focus_width"].get())
         c["focus_x"] = self._focus_x
@@ -1188,11 +1292,16 @@ class DepthUI(tk.Tk):
             _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
             write_exr(f"{OUT}/photo_src.exr", _srgb_to_linear(np.clip(_i, 0.0, 1.0)).astype(np.float32))
 
-            if c.get("ply_out"):
+            if c.get("ply_out") or c.get("glb_out"):
                 try:
-                    write_ply(f"{OUT}/photo_points.ply", dfloat, img_out)
+                    if c.get("ply_out"):
+                        write_ply(f"{OUT}/photo_points.ply", dfloat, img_out,
+                                  fov_y=c.get("ply_fov", 90.0), scale=c.get("ply_scale", 1.0))
+                    if c.get("glb_out"):
+                        write_glb(f"{OUT}/photo_points.glb", dfloat, img_out,
+                                  fov_y=c.get("ply_fov", 90.0), scale=c.get("ply_scale", 1.0))
                 except Exception as e:
-                    print("ply error:", e)
+                    print("ply/glb error:", e)
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
                 # первый рендер не пропадает: сохраняем его отдельно
