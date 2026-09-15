@@ -814,12 +814,10 @@ class DepthUI(tk.Tk):
             _m = "small"
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
-                  "large_in": "Large Indoor", "large_out": "Large Outdoor",
-                  "large_mix": "Микс Large+MiDaS+Zoe"}
+                  "large_in": "Large Indoor", "large_out": "Large Outdoor"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
-                            "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor",
-                            "Микс Large+MiDaS+Zoe"],
+                            "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
                      width=12, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
@@ -1320,8 +1318,7 @@ class DepthUI(tk.Tk):
                       "midas": "midas", "zoedepth": "zoe", "zoe": "zoe",
                       "base indoor": "base_in", "base outdoor": "base_out",
                       "large indoor": "large_in",
-                      "large outdoor": "large_out",
-                      "large mix (in/out)": "large_mix"}.get(self.vars["model"].get().lower(), "small")
+                      "large outdoor": "large_out"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         if str(c["src"]).lower().endswith(".exr"):
