@@ -793,6 +793,22 @@ class DepthUI(tk.Tk):
                      width=12, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
+        fx = ttk.Frame(self)
+        fx.pack(fill="x", padx=5, pady=3)
+        self.var_fx_on = tk.BooleanVar(value=False)
+        ttk.Checkbutton(fx, text="Рельеф по фото (без ИИ)", variable=self.var_fx_on).pack(side="left")
+        self._fx_form_var = tk.StringVar(value="Волны")
+        ttk.Combobox(fx, textvariable=self._fx_form_var,
+                     values=["Волны", "Горки", "Кратеры", "Спираль", "Шум-горы", "Гребни"],
+                     width=11, state="readonly").pack(side="left", padx=6)
+        ttk.Label(fx, text="сила фото:", foreground="#888").pack(side="left")
+        fx_str = tk.DoubleVar(value=0.6)
+        self._fx_str_lbl = ttk.Label(fx, text="0.60", width=5)
+        ttk.Scale(fx, from_=0.0, to=1.0, variable=fx_str, orient="horizontal", length=120,
+                  command=lambda _v: self._fx_str_lbl.configure(text=f"{fx_str.get():.2f}")).pack(side="left")
+        self._fx_str_lbl.pack(side="left", padx=4)
+        self.vars["fx_strength"] = fx_str
+
         # --- slider helpers: 2 колонки (левая/правая) ---
         slider_grid = ttk.Frame(self)
         slider_grid.pack(fill="x", padx=5)
@@ -1331,6 +1347,12 @@ class DepthUI(tk.Tk):
         c["gen"] = "none"
         c["gen_amp"] = 1.0
         c["gen_freq"] = 2.0
+        c["fx_on"] = bool(self.var_fx_on.get())
+        c["fx_strength"] = float(self.vars["fx_strength"].get())
+        if c["fx_on"]:
+            c["gen"] = {"Волны": "waves", "Горки": "bumps", "Кратеры": "craters",
+                        "Спираль": "spiral", "Шум-горы": "noise", "Гребни": "ridges"}.get(
+                            self._fx_form_var.get(), "waves")
         try:
             c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
         except ValueError:
@@ -1403,7 +1425,13 @@ class DepthUI(tk.Tk):
                     download_model(c["model"], model_paths[0])
                     self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
             gen = str(c.get("gen") or "none")
-            if gen != "none":
+            if c.get("fx_on") and gen != "none":
+                if str(c["src"]).lower().endswith(".exr"):
+                    img = _exr_load_rgb(c["src"])
+                    if img is None:
+                        raise ValueError(f"Не удалось прочитать EXR: {c['src']}")
+                else:
+                    img = Image.open(c["src"]).convert("RGB")
                 out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
                 try:
                     w0, h0 = [int(x) for x in out_size.split("x")]
@@ -1411,12 +1439,16 @@ class DepthUI(tk.Tk):
                     w0, h0 = 512, 512
                 if w0 < 2 or h0 < 2:
                     w0, h0 = 512, 512
-                nw, nh = w0, h0
-                dfull = gen_depth_map(gen, h0, w0,
-                                      float(c.get("gen_amp", 1.0) or 1.0),
-                                      float(c.get("gen_freq", 2.0) or 2.0))
-                dfull = np.asarray(dfull, dtype=np.float32)
-                img = Image.fromarray((colormap_rgb(dfull) * 255).astype(np.uint8)).convert("RGB")
+                dfull = np.asarray(gen_depth_map(gen, h0, w0,
+                                                 float(c.get("gen_amp", 1.0) or 1.0),
+                                                 float(c.get("gen_freq", 2.0) or 2.0)),
+                                    dtype=np.float32)
+                k = float(c.get("fx_strength", 0.6) or 0.0)
+                if k > 0:
+                    m = np.asarray(img.convert("L").resize((w0, h0), Image.BICUBIC),
+                                   dtype=np.float32) / 255.0
+                    dfull = dfull * ((1.0 - k) + k * m)
+                img = img.convert("RGB").resize((w0, h0), Image.LANCZOS)
                 d = None
             else:
                             if str(c["src"]).lower().endswith(".exr"):
