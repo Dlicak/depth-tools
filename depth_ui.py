@@ -69,7 +69,7 @@ MODEL_URLS = {
     "large_out": "depth_anything_v2_vitl_outdoor_dynamic.onnx",
 }
 
-METRIC_MODELS = {"zoe", "base_in", "base_out", "large_in", "large_out"}
+METRIC_MODELS = {"zoe", "base_in", "base_out", "large_in", "large_out", "large_mix"}
 
 
 def download_model(key, dst):
@@ -585,6 +585,47 @@ def _write_mesh_glb(path, verts, cols, faces):
         f.write(bin_)
 
 
+def _infer_depth(model_path, img, nw, nh, metric=False):
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_depth_infer.py")
+    tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tf, "PNG")
+    tf.close()
+    tmp_in = tf.name
+    tf = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
+    tf.close()
+    tmp_out = tf.name
+    try:
+        proc = subprocess.Popen([sys.executable, worker, model_path, str(nw), str(nh), tmp_in, tmp_out])
+        total = total_ram_mb()
+        floor = max(400.0, (total or 0.0) * 0.08)
+        while proc.poll() is None:
+            time.sleep(0.2)
+            av = avail_ram_mb()
+            if av is not None and av < floor:
+                proc.kill()
+                raise MemoryError("Обработка остановлена: свободная ОЗУ закончилась.\n"
+                                  "Уменьшите «Множитель» или включите «Эконом ОЗУ».")
+        if proc.returncode != 0:
+            raise RuntimeError(f"Ошибка вычисления глубины (код {proc.returncode}).")
+        d = np.load(tmp_out).astype(np.float32)
+    finally:
+        for t in (tmp_in, tmp_out):
+            try:
+                if t:
+                    os.remove(t)
+            except Exception:
+                pass
+    d = d - d.min()
+    d = d / (d.max() + 1e-8)
+    if metric:
+        d = 1.0 - d
+    return d
+
+
 def write_ply(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
     X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
     h, w = np.asarray(dfloat).shape[:2]
@@ -739,15 +780,17 @@ class DepthUI(tk.Tk):
         ttk.Label(row, text="Модель:", width=15).pack(side="left", **pad)
         _m = str(cfg.get("model", "small")).lower()
         if _m not in ("small", "base", "large", "midas", "zoe",
-                  "base_in", "base_out", "large_in", "large_out"):
+                  "base_in", "base_out", "large_in", "large_out", "large_mix"):
             _m = "small"
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
-                  "large_in": "Large Indoor", "large_out": "Large Outdoor"}
+                  "large_in": "Large Indoor", "large_out": "Large Outdoor",
+                  "large_mix": "Large Mix (IN/OUT)"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
-                            "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
-                     width=10, state="readonly").pack(side="left", padx=10, pady=4)
+                            "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor",
+                            "Large Mix (IN/OUT)"],
+                     width=12, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
         # --- slider helpers: 2 колонки (левая/правая) ---
@@ -1247,7 +1290,8 @@ class DepthUI(tk.Tk):
                       "midas": "midas", "zoedepth": "zoe", "zoe": "zoe",
                       "base indoor": "base_in", "base outdoor": "base_out",
                       "large indoor": "large_in",
-                      "large outdoor": "large_out"}.get(self.vars["model"].get().lower(), "small")
+                      "large outdoor": "large_out",
+                      "large mix (in/out)": "large_mix"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         if str(c["src"]).lower().endswith(".exr"):
@@ -1327,19 +1371,29 @@ class DepthUI(tk.Tk):
                     text="Модель «%s» готова (PLY/GLB)" % kind))
                 return
             if c["model"] == "midas":
-                model = common.find_model("midas_v21_small_256.onnx")
-                if not os.path.exists(model):
+                model_paths = [common.find_model("midas_v21_small_256.onnx")]
+                if not os.path.exists(model_paths[0]):
                     raise ValueError("MiDaS: нет файла midas_v21_small_256.onnx в папке Z-depth")
             elif c["model"] == "zoe":
-                model = common.find_model("zoedepth_nk_fp16.onnx")
-                if not os.path.exists(model):
+                model_paths = [common.find_model("zoedepth_nk_fp16.onnx")]
+                if not os.path.exists(model_paths[0]):
                     raise ValueError("ZoeDepth: нет файла zoedepth_nk_fp16.onnx в папке Z-depth")
+            elif c["model"] == "large_mix":
+                names = ("large_in", "large_out")
+                model_paths = [common.find_model(f"depth_anything_v2_{_n}.onnx") for _n in names]
+                for _n, _p in zip(names, model_paths):
+                    if not os.path.exists(_p):
+                        self.after(0, lambda: self.lbl_status.configure(
+                            text=f"Скачивание модели {_n.capitalize()}..."))
+                        download_model(_n, _p)
+                self.after(0, lambda: self.lbl_status.configure(
+                    text="Модели Large IN/OUT готовы"))
             else:
-                model = common.find_model(f"depth_anything_v2_{c['model']}.onnx")
-                if not os.path.exists(model):
+                model_paths = [common.find_model(f"depth_anything_v2_{c['model']}.onnx")]
+                if not os.path.exists(model_paths[0]):
                     self.after(0, lambda: self.lbl_status.configure(
                         text=f"Скачивание модели {c['model'].capitalize()}..."))
-                    download_model(c["model"], model)
+                    download_model(c["model"], model_paths[0])
                     self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
             gen = str(c.get("gen") or "none")
             if gen != "none":
@@ -1382,44 +1436,11 @@ class DepthUI(tk.Tk):
                             elif c["model"] == "zoe":
                                 nw, nh = 512, 384
 
-                            import subprocess
-                            import sys
-                            import tempfile
-                            import time
-                            worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_depth_infer.py")
-                            tmp_in = tmp_out = None
-                            try:
-                                tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                                img.save(tf, "PNG")
-                                tf.close()
-                                tmp_in = tf.name
-                                tf = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
-                                tf.close()
-                                tmp_out = tf.name
-                                proc = subprocess.Popen([sys.executable, worker, model, str(nw), str(nh), tmp_in, tmp_out])
-                                total = total_ram_mb()
-                                floor = max(400.0, (total or 0.0) * 0.08)
-                                while proc.poll() is None:
-                                    time.sleep(0.2)
-                                    av = avail_ram_mb()
-                                    if av is not None and av < floor:
-                                        proc.kill()
-                                        raise MemoryError("Обработка остановлена: свободная ОЗУ закончилась.\n"
-                                                          "Уменьшите «Множитель» или включите «Эконом ОЗУ».")
-                                if proc.returncode != 0:
-                                    raise RuntimeError(f"Ошибка вычисления глубины (код {proc.returncode}).")
-                                d = np.load(tmp_out).astype(np.float32)
-                            finally:
-                                for t in (tmp_in, tmp_out):
-                                    try:
-                                        if t:
-                                            os.remove(t)
-                                    except Exception:
-                                        pass
-                            d = d - d.min()
-                            d = d / (d.max() + 1e-8)
-                            if c["model"] in METRIC_MODELS:
-                                d = 1.0 - d
+                            ds = []
+                            for _mp in model_paths:
+                                ds.append(_infer_depth(_mp, img, nw, nh,
+                                                       metric=c["model"] in METRIC_MODELS))
+                            d = np.mean(ds, axis=0)
                             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
             if g_strength > 0:
