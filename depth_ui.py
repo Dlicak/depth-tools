@@ -430,6 +430,36 @@ def gen_depth_map(kind, h, w, amp=1.0, freq=2.0):
         z = np.power(np.clip(z, 0.0, 1.0), 1.4)
         z = z - z.min()
         z = z / (z.max() + 1e-8)
+    elif kind in ("valley", "peaks", "dunes", "caldera", "canyon"):
+        _b = (np.linspace(0.0, 1.0, h)[:, None] ** 1.3).astype(np.float32)
+        if kind == "valley":
+            Y = _meshgrid(h, w)[1]
+            z = _b * (0.45 + 0.55 * np.abs(Y))
+            z = z + (0.5 - 0.5 * np.abs(Y)) * 0.35
+        elif kind == "peaks":
+            z = _fbm(h, w, 13, octaves=6, scale=2.8 * f)
+            z = 1.0 - np.abs(z * 2 - 1)
+            z = np.power(np.clip(z, 0.0, 1.0), 1.5)
+            z = _b * 0.35 + z * 0.65
+        elif kind == "dunes":
+            Y, X = _meshgrid(h, w)[1], _meshgrid(h, w)[0]
+            z = _b + 0.45 * np.sin(X * np.pi * f * 0.6 + Y * 3.1) * np.abs(np.sin(Y * 2.2 + 1.3))
+            z = z + 0.15 * (_fbm(h, w, 17, octaves=4, scale=2.0) - 0.5)
+        elif kind == "caldera":
+            Y, X = _meshgrid(h, w)[1], _meshgrid(h, w)[0]
+            cx, cy = 0.0, -0.45
+            r = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+            z = np.exp(-((r - 0.55) ** 2) / 0.04) * (1 + Y) * 0.8
+            z = z + np.exp(-(r ** 2) / 0.35) * 0.3
+            z = z * (1.0 - np.exp(-((r + 0.4) * 6) ** 2))
+            z = _b * 0.25 + z
+        elif kind == "canyon":
+            z = _fbm(h, w, int(round(f * 10 % 977)), octaves=6, scale=2.4 * f)
+            z = (1.0 - np.abs(z * 2 - 1))
+            z = np.power(np.clip(z, 0.0, 1.0), 0.8)
+            z = _b * (0.3 + 0.7 * z)
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
     else:
         X, Y = _meshgrid(h, w)
         z = 0.5 + 0.5 * np.sin(X * np.pi * f) * np.sin(Y * np.pi * f)
@@ -799,7 +829,8 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(fx, text="Рельеф по фото (без ИИ)", variable=self.var_fx_on).pack(side="left")
         self._fx_form_var = tk.StringVar(value="Волны")
         ttk.Combobox(fx, textvariable=self._fx_form_var,
-                     values=["Волны", "Горки", "Кратеры", "Спираль", "Шум-горы", "Гребни"],
+                     values=["Волны", "Горки", "Кратеры", "Спираль", "Шум-горы", "Гребни",
+                             "Долина", "Хребты", "Дюны", "Кальдера", "Каньон"],
                      width=11, state="readonly").pack(side="left", padx=6)
         ttk.Label(fx, text="сила фото:", foreground="#888").pack(side="left")
         fx_str = tk.DoubleVar(value=0.6)
@@ -1351,7 +1382,9 @@ class DepthUI(tk.Tk):
         c["fx_strength"] = float(self.vars["fx_strength"].get())
         if c["fx_on"]:
             c["gen"] = {"Волны": "waves", "Горки": "bumps", "Кратеры": "craters",
-                        "Спираль": "spiral", "Шум-горы": "noise", "Гребни": "ridges"}.get(
+                        "Спираль": "spiral", "Шум-горы": "noise", "Гребни": "ridges",
+                        "Долина": "valley", "Хребты": "peaks", "Дюны": "dunes",
+                        "Кальдера": "caldera", "Каньон": "canyon"}.get(
                             self._fx_form_var.get(), "waves")
         try:
             c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
