@@ -728,40 +728,6 @@ class DepthUI(tk.Tk):
         # --- фото ---
         row = ttk.Frame(self)
         row.pack(fill="x")
-        ttk.Label(row, text="Источник:").pack(side="left", **pad)
-        self.var_gen = tk.StringVar(value=str(cfg.get("gen", "none")))
-        self._gens = [
-            ("none", "фото (по умолчанию)"),
-            ("waves", "Математика: Волны"),
-            ("bumps", "Математика: Горки"),
-            ("craters", "Математика: Кратеры"),
-            ("spiral", "Математика: Спираль"),
-            ("noise", "Математика: Шум-горы"),
-            ("ridges", "Математика: Гребни"),
-            ("shape:torus", "Фигура: Тор"),
-            ("shape:sphere", "Фигура: Сфера"),
-            ("shape:helix", "Фигура: Пружина"),
-            ("shape:mobius", "Фигура: Лента Мёбиуса"),
-            ("shape:superell", "Фигура: Суперэллипсоид"),
-        ]
-        self._gen_labels = [l for _, l in self._gens]
-        gen_box = ttk.Combobox(row, values=self._gen_labels, width=32, state="readonly")
-        gen_box.pack(side="left", padx=10, pady=4)
-        kv = dict(self._gens)
-        _cur = cfg.get("gen", "none")
-        gen_box.set(kv.get(_cur, "фото (по умолчанию)"))
-        self._gen_box = gen_box
-        ttk.Label(row, text="Ампл:").pack(side="left", padx=5, pady=4)
-        self.vars["gen_amp"] = tk.StringVar(value=str(cfg.get("gen_amp", 1.0)))
-        ttk.Spinbox(row, from_=0.2, to=5, increment=0.1, width=5,
-                    textvariable=self.vars["gen_amp"]).pack(side="left")
-        ttk.Label(row, text="Частота:").pack(side="left", padx=5, pady=4)
-        self.vars["gen_freq"] = tk.StringVar(value=str(cfg.get("gen_freq", 2.0)))
-        ttk.Spinbox(row, from_=0.5, to=20, increment=0.5, width=5,
-                    textvariable=self.vars["gen_freq"]).pack(side="left")
-
-        row = ttk.Frame(self)
-        row.pack(fill="x")
         ttk.Label(row, text="Фото:").pack(side="left", **pad)
         self.var_src = tk.StringVar(value=SRC)
         ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
@@ -1318,20 +1284,9 @@ class DepthUI(tk.Tk):
         c["normal_png"] = bool(self.vars["normal_png"].get())
         c["ply_out"] = bool(self.vars["ply_out"].get())
         c["glb_out"] = bool(self.vars["glb_out"].get())
-        try:
-            gen_sel = self._gen_box.get()
-        except Exception:
-            gen_sel = gen_labels and (gen_labels[0])
-        gen_map = dict((v, k) for k, v in self._gens)
-        c["gen"] = gen_map.get(gen_sel, "none")
-        try:
-            c["gen_amp"] = float(str(self.vars["gen_amp"].get()).replace(",", "."))
-        except ValueError:
-            c["gen_amp"] = 1.0
-        try:
-            c["gen_freq"] = float(str(self.vars["gen_freq"].get()).replace(",", "."))
-        except ValueError:
-            c["gen_freq"] = 2.0
+        c["gen"] = "none"
+        c["gen_amp"] = 1.0
+        c["gen_freq"] = 2.0
         try:
             c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
         except ValueError:
