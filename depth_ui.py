@@ -192,7 +192,7 @@ def write_exr(path, img):
     chans = b""
     order = ([("A", 3)] if has_a else []) + [("B", 2), ("G", 1), ("R", 0)]
     for nm, src in order:
-        chans += nm.encode() + b"\0" + _s.pack("<i", 1) + _s.pack("<B", 0) + b"\0\0\0" + _s.pack("<ii", 1, 1)
+        chans += nm.encode() + b"\0" + _s.pack("<i", 2) + _s.pack("<B", 0) + b"\0\0\0" + _s.pack("<ii", 1, 1)
     chans += b"\0"
     hdr = b"\x76\x2f\x31\x01" + _s.pack("<I", 2)
     hdr += attr("channels", "chlist", chans)
@@ -205,7 +205,7 @@ def write_exr(path, img):
     hdr += attr("screenWindowWidth", "float", _s.pack("<f", 1.0))
     hdr += b"\0"
     planes = ([a[..., 3]] if has_a else []) + [a[..., 2], a[..., 1], a[..., 0]]
-    planes16 = [p.astype(np.float16) for p in planes]
+    planes32 = [p.astype(np.float32) for p in planes]
     npl = len(planes)
     offsets = []
     pos = len(hdr) + 8 * h
@@ -213,7 +213,7 @@ def write_exr(path, img):
     # стандартный порядок: чанк y = строка y (сверху вниз), lineOrder=INCREASING_Y
     for y in range(h):
         offsets.append(pos)
-        data = b"".join(p[y].tobytes() for p in planes16)
+        data = b"".join(p[y].tobytes() for p in planes32)
         chunks.append(_s.pack("<ii", y, len(data)) + data)
         pos += 8 + len(data)
     with open(path, "wb") as f:
@@ -250,16 +250,18 @@ def _exr_planes(path):
             e = blob.index(0, p); nm = blob[p:e].decode(); p = e+1
             types.append(_st.unpack("<i", blob[p:p+4])[0]); p += 16
             chans.append(nm)
-        if types and any(t != 1 for t in types):
-            return None  # только half-float
+        if types and any(t not in (1, 2) for t in types):
+            return None  # только half (1) и float32 (2)
         dec = attrs.get("lineOrder", ("", b"\x00"))[1][0] == 1
         offs = _st.unpack("<" + "Q"*h, d[pos:pos+8*h])
         planes = {}
         for ci, nm in enumerate(chans):
+            dt = "<f2" if types[ci] == 1 else "<f4"
+            bps = 2 if types[ci] == 1 else 4
             arr = np.empty((h, w), dtype=np.float32)
             for y in range(h):
-                o = offs[y] + 8 + ci*w*2
-                row = np.frombuffer(d[o:o+w*2], dtype="<f2").astype(np.float32)
+                o = offs[y] + 8 + ci*w*bps
+                row = np.frombuffer(d[o:o+w*bps], dtype=dt).astype(np.float32)
                 # DECREASING_Y: чанк 0 = нижняя строка файла
                 arr[h-1-y if dec else y] = row
             planes[nm] = arr
