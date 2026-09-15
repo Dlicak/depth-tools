@@ -785,11 +785,11 @@ class DepthUI(tk.Tk):
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
                   "large_in": "Large Indoor", "large_out": "Large Outdoor",
-                  "large_mix": "Large Mix (IN/OUT)"}
+                  "large_mix": "Large Mix (3 модели)"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor",
-                            "Large Mix (IN/OUT)"],
+                            "Large Mix (3 модели)"],
                      width=12, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
@@ -1379,7 +1379,7 @@ class DepthUI(tk.Tk):
                 if not os.path.exists(model_paths[0]):
                     raise ValueError("ZoeDepth: нет файла zoedepth_nk_fp16.onnx в папке Z-depth")
             elif c["model"] == "large_mix":
-                names = ("large_in", "large_out")
+                names = ("large", "large_in", "large_out")
                 model_paths = [common.find_model(f"depth_anything_v2_{_n}.onnx") for _n in names]
                 for _n, _p in zip(names, model_paths):
                     if not os.path.exists(_p):
@@ -1387,7 +1387,7 @@ class DepthUI(tk.Tk):
                             text=f"Скачивание модели {_n.capitalize()}..."))
                         download_model(_n, _p)
                 self.after(0, lambda: self.lbl_status.configure(
-                    text="Модели Large IN/OUT готовы"))
+                    text="Модели Large/IN/OUT готовы"))
             else:
                 model_paths = [common.find_model(f"depth_anything_v2_{c['model']}.onnx")]
                 if not os.path.exists(model_paths[0]):
@@ -1439,7 +1439,8 @@ class DepthUI(tk.Tk):
                             ds = []
                             for _mp in model_paths:
                                 ds.append(_infer_depth(_mp, img, nw, nh,
-                                                       metric=c["model"] in METRIC_MODELS))
+                                                       metric=(c["model"] in METRIC_MODELS
+                                                               and c["model"] != "large_mix")))
                             d = np.mean(ds, axis=0)
                             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
