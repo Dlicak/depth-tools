@@ -831,7 +831,7 @@ class DepthUI(tk.Tk):
         ttk.Combobox(fx, textvariable=self._fx_form_var,
                      values=["Волны", "Горки", "Кратеры", "Спираль", "Шум-горы", "Гребни",
                              "Долина", "Хребты", "Дюны", "Кальдера", "Каньон",
-                             "Чёткость-глубина"],
+                             "Чёткость-глубина", "Затенение (SfS)"],
                      width=11, state="readonly").pack(side="left", padx=6)
         ttk.Label(fx, text="сила фото:", foreground="#888").pack(side="left")
         fx_str = tk.DoubleVar(value=0.6)
@@ -1386,7 +1386,8 @@ class DepthUI(tk.Tk):
                         "Спираль": "spiral", "Шум-горы": "noise", "Гребни": "ridges",
                         "Долина": "valley", "Хребты": "peaks", "Дюны": "dunes",
                         "Кальдера": "caldera", "Каньон": "canyon",
-                        "Чёткость-глубина": "photo"}.get(
+                        "Чёткость-глубина": "photo",
+                        "Затенение (SfS)": "shading"}.get(
                             self._fx_form_var.get(), "waves")
         try:
             c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
@@ -1480,6 +1481,15 @@ class DepthUI(tk.Tk):
                     r = max(3, int(round(float(c.get("gen_freq", 2.0) or 2.0) * 6)))
                     v = _box_f(g * g, r) - _box_f(g, r) ** 2
                     dfull = _box_f(np.sqrt(np.clip(v, 0.0, None)), max(2, r // 2))
+                    dfull = np.nan_to_num(np.asarray(dfull, dtype=np.float32), nan=0.0)
+                elif gen == "shading":
+                    g = np.asarray(img.convert("L").resize((w0, h0), Image.BICUBIC),
+                                   dtype=np.float32) / 255.0
+                    r = max(3, int(round(float(c.get("gen_freq", 2.0) or 2.0) * 3)))
+                    s = _box_f(g, r)
+                    grad = np.asarray(np.gradient(s), dtype=np.float32)
+                    h = np.cumsum(grad[1], axis=1) * 0.5 + np.cumsum(grad[0], axis=0) * 0.5
+                    dfull = s * 0.55 + (h - h.min()) / (h.max() - h.min() + 1e-8) * 0.45
                     dfull = np.nan_to_num(np.asarray(dfull, dtype=np.float32), nan=0.0)
                 else:
                     dfull = np.asarray(gen_depth_map(gen, h0, w0,
