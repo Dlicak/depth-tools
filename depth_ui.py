@@ -785,11 +785,11 @@ class DepthUI(tk.Tk):
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
                   "large_in": "Large Indoor", "large_out": "Large Outdoor",
-                  "large_mix": "Large Mix (3 модели)"}
+                  "large_mix": "Микс Large+MiDaS+Zoe"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor",
-                            "Large Mix (3 модели)"],
+                            "Микс Large+MiDaS+Zoe"],
                      width=12, state="readonly").pack(side="left", padx=10, pady=4)
         ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
 
@@ -1379,15 +1379,22 @@ class DepthUI(tk.Tk):
                 if not os.path.exists(model_paths[0]):
                     raise ValueError("ZoeDepth: нет файла zoedepth_nk_fp16.onnx в папке Z-depth")
             elif c["model"] == "large_mix":
-                names = ("large", "large_in", "large_out")
-                model_paths = [common.find_model(f"depth_anything_v2_{_n}.onnx") for _n in names]
-                for _n, _p in zip(names, model_paths):
+                labels = ("Large", "MiDaS", "Zoe")
+                model_paths = [common.find_model("depth_anything_v2_large.onnx"),
+                               common.find_model("midas_v21_small_256.onnx"),
+                               common.find_model("zoedepth_nk_fp16.onnx")]
+                for _lb, _p in zip(labels, model_paths):
                     if not os.path.exists(_p):
                         self.after(0, lambda: self.lbl_status.configure(
-                            text=f"Скачивание модели {_n.capitalize()}..."))
-                        download_model(_n, _p)
+                            text=f"Скачивание модели {_lb}..."))
+                        if _lb == "Large":
+                            download_model("large", _p)
+                        else:
+                            self.after(0, lambda: self.lbl_status.configure(
+                                text=f"Нет файла {_lb}: положи {os.path.basename(_p)} в папку Z-depth"))
+                            raise ValueError(f"{_lb}: нет файла {_p}")
                 self.after(0, lambda: self.lbl_status.configure(
-                    text="Модели Large/IN/OUT готовы"))
+                    text="Модели Large/MiDaS/Zoe готовы"))
             else:
                 model_paths = [common.find_model(f"depth_anything_v2_{c['model']}.onnx")]
                 if not os.path.exists(model_paths[0]):
@@ -1438,9 +1445,14 @@ class DepthUI(tk.Tk):
 
                             ds = []
                             if c["model"] == "large_mix":
-                                for _n, _mp in zip(("large", "large_in", "large_out"), model_paths):
-                                    ds.append(_infer_depth(_mp, img, nw, nh,
-                                                           metric=_n in ("large_in", "large_out")))
+                                sizes = ((nw, nh), (256, 256), (512, 384))
+                                for _n, _mp, (_nw, _nh) in zip(
+                                        ("large", "midas", "zoe"), model_paths, sizes):
+                                    _di = _infer_depth(_mp, img, _nw, _nh, metric=_n == "zoe")
+                                    if _di.shape != (nh, nw):
+                                        _di = np.asarray(Image.fromarray(_di).resize(
+                                            (nw, nh), Image.BICUBIC), dtype=np.float32)
+                                    ds.append(_di)
                             else:
                                 for _mp in model_paths:
                                     ds.append(_infer_depth(_mp, img, nw, nh,
@@ -1547,7 +1559,7 @@ class DepthUI(tk.Tk):
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
             _mix_ds = self.__dict__.get("_mix_ds")
             if _mix_ds:
-                for _tag, _di in zip(("large", "in", "out"), _mix_ds):
+                for _tag, _di in zip(("large", "midas", "zoe"), _mix_ds):
                     di = np.asarray(Image.fromarray(_di).resize((w, h), Image.LANCZOS), dtype=np.float32)
                     mn, mx = float(di.min()), float(di.max())
                     di = np.clip((di - mn) / (mx - mn + 1e-8), 0.0, 1.0)
