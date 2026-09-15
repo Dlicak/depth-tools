@@ -830,7 +830,8 @@ class DepthUI(tk.Tk):
         self._fx_form_var = tk.StringVar(value="Волны")
         ttk.Combobox(fx, textvariable=self._fx_form_var,
                      values=["Волны", "Горки", "Кратеры", "Спираль", "Шум-горы", "Гребни",
-                             "Долина", "Хребты", "Дюны", "Кальдера", "Каньон"],
+                             "Долина", "Хребты", "Дюны", "Кальдера", "Каньон",
+                             "Чёткость-глубина"],
                      width=11, state="readonly").pack(side="left", padx=6)
         ttk.Label(fx, text="сила фото:", foreground="#888").pack(side="left")
         fx_str = tk.DoubleVar(value=0.6)
@@ -1384,7 +1385,8 @@ class DepthUI(tk.Tk):
             c["gen"] = {"Волны": "waves", "Горки": "bumps", "Кратеры": "craters",
                         "Спираль": "spiral", "Шум-горы": "noise", "Гребни": "ridges",
                         "Долина": "valley", "Хребты": "peaks", "Дюны": "dunes",
-                        "Кальдера": "caldera", "Каньон": "canyon"}.get(
+                        "Кальдера": "caldera", "Каньон": "canyon",
+                        "Чёткость-глубина": "photo"}.get(
                             self._fx_form_var.get(), "waves")
         try:
             c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
@@ -1472,15 +1474,23 @@ class DepthUI(tk.Tk):
                     w0, h0 = 512, 512
                 if w0 < 2 or h0 < 2:
                     w0, h0 = 512, 512
-                dfull = np.asarray(gen_depth_map(gen, h0, w0,
-                                                 float(c.get("gen_amp", 1.0) or 1.0),
-                                                 float(c.get("gen_freq", 2.0) or 2.0)),
-                                    dtype=np.float32)
-                k = float(c.get("fx_strength", 0.6) or 0.0)
-                if k > 0:
-                    m = np.asarray(img.convert("L").resize((w0, h0), Image.BICUBIC),
+                if gen == "photo":
+                    g = np.asarray(img.convert("L").resize((w0, h0), Image.BICUBIC),
                                    dtype=np.float32) / 255.0
-                    dfull = dfull * ((1.0 - k) + k * m)
+                    r = max(3, int(round(float(c.get("gen_freq", 2.0) or 2.0) * 6)))
+                    v = _box_f(g * g, r) - _box_f(g, r) ** 2
+                    dfull = _box_f(np.sqrt(np.clip(v, 0.0, None)), max(2, r // 2))
+                    dfull = np.nan_to_num(np.asarray(dfull, dtype=np.float32), nan=0.0)
+                else:
+                    dfull = np.asarray(gen_depth_map(gen, h0, w0,
+                                                     float(c.get("gen_amp", 1.0) or 1.0),
+                                                     float(c.get("gen_freq", 2.0) or 2.0)),
+                                       dtype=np.float32)
+                    k = float(c.get("fx_strength", 0.6) or 0.0)
+                    if k > 0:
+                        m = np.asarray(img.convert("L").resize((w0, h0), Image.BICUBIC),
+                                       dtype=np.float32) / 255.0
+                        dfull = dfull * ((1.0 - k) + k * m)
                 img = img.convert("RGB").resize((w0, h0), Image.LANCZOS)
                 d = None
             else:
