@@ -439,6 +439,152 @@ def gen_depth_map(kind, h, w, amp=1.0, freq=2.0):
     return np.clip(z * (float(amp) ** 0.6), 0.0, 1.0)
 
 
+def gen_mesh(kind, size=1.0, freq=2.0, res=96):
+    size = max(0.05, float(size))
+    turns = max(0.1, float(freq))
+    res = int(res)
+    kind = str(kind or "torus")
+    u = np.linspace(0, 2 * np.pi, res, dtype=np.float32)
+    v = np.linspace(0, 2 * np.pi, res, dtype=np.float32)
+    U, V = np.meshgrid(u, v, indexing="ij")
+    if kind == "sphere":
+        x = (size * np.sin(V) * np.cos(U)).reshape(-1)
+        y = (size * np.sin(V) * np.sin(U)).reshape(-1)
+        z = (size * np.cos(V)).reshape(-1)
+    elif kind == "helix":
+        nw = int(round(turns * res))
+        uu = np.linspace(0, 2 * np.pi * turns, nw, dtype=np.float32)
+        UU, VV = np.meshgrid(uu, v, indexing="ij")
+        R = size * 0.6
+        r = size * 0.16
+        c = np.cos(UU)
+        s = np.sin(UU)
+        x = ((R + r * np.cos(VV)) * c).reshape(-1)
+        y = ((R + r * np.cos(VV)) * s).reshape(-1)
+        z = (size * 0.9 * UU / (2 * np.pi * turns) + r * np.sin(VV)).reshape(-1)
+        U = UU
+        V = VV
+    elif kind == "mobius":
+        tw = int(round(turns))
+        ww = np.linspace(0, 2 * np.pi * tw, res, dtype=np.float32)
+        WW, VV = np.meshgrid(ww, np.linspace(-1, 1, res, dtype=np.float32), indexing="ij")
+        hw = WW * 0.5 * tw
+        x = ((1 + VV * 0.4 * np.cos(hw + WW * (tw % 2) * 0)) * np.cos(WW)).reshape(-1)
+        y = ((1 + VV * 0.4 * np.cos(hw + WW * (tw % 2) * 0)) * np.sin(WW)).reshape(-1)
+        z = (VV * 0.4 * np.sin(hw + WW * (tw % 2) * 0)).reshape(-1)
+        x = (x * size * 0.6).reshape(-1)
+        y = (y * size * 0.6).reshape(-1)
+        z = (z * size * 0.6).reshape(-1)
+        U = WW
+        V = VV
+    elif kind == "superell":
+        eu = max(0.3, (turns - 0.5) / 1.5)
+        ev = eu
+        x = (size * np.sign(np.cos(U)) * np.abs(np.cos(U)) ** eu
+             * np.sign(np.cos(V)) * np.abs(np.cos(V)) ** ev).reshape(-1)
+        y = (size * np.sign(np.cos(U)) * np.abs(np.cos(U)) ** eu
+             * np.sign(np.sin(V)) * np.abs(np.sin(V)) ** ev).reshape(-1)
+        z = (size * np.sign(np.sin(U)) * np.abs(np.sin(U)) ** eu).reshape(-1)
+    else:  # torus
+        R = size
+        r = size * 0.35
+        x = ((R + r * np.cos(V)) * np.cos(U)).reshape(-1)
+        y = ((R + r * np.cos(V)) * np.sin(U)).reshape(-1)
+        z = (r * np.sin(V)).reshape(-1)
+    nx, ny = U.shape
+    verts = np.stack([x, y, z], axis=-1)
+    mx = float(np.abs(verts).max())
+    if mx > 0:
+        verts = verts / mx * (float(size))
+    cols = np.stack([
+        (0.5 + 0.5 * np.cos(U) * np.cos(V)).reshape(-1),
+        (0.5 + 0.5 * np.sin(U)).reshape(-1),
+        (0.5 + 0.5 * np.sin(V)).reshape(-1),
+    ], axis=-1)
+    cols = (np.clip(cols, 0, 1) * 255).astype(np.uint8)
+    faces = []
+    for i in range(nx - 1):
+        for j in range(ny - 1):
+            a = i * ny + j
+            faces.append((a, a + 1, a + ny + 1))
+            faces.append((a, a + ny + 1, a + ny))
+    return verts, cols, np.asarray(faces, dtype=np.uint32)
+
+
+def _write_mesh_ply(path, verts, cols, faces):
+    n = verts.shape[0]
+    with open(path, "w") as f:
+        f.write(
+            "ply\nformat ascii 1.0\nelement vertex %d\n"
+            "property float x\nproperty float y\nproperty float z\n"
+            "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+            "element face %d\nproperty list uchar int vertex_indices\n"
+            "end_header\n" % (n, len(faces))
+        )
+        np.savetxt(f, np.column_stack([verts, cols]).astype(np.float32),
+                   fmt="%.6f %.6f %.6f %d %d %d")
+        for fc in faces:
+            f.write("3 %d %d %d\n" % (fc[0], fc[1], fc[2]))
+
+
+def _write_mesh_glb(path, verts, cols, faces):
+    import struct
+    n = verts.shape[0]
+    pos = verts.astype(np.float32)
+    lcol = ((cols / 255.0) ** 2.2).astype(np.float32)
+    col = np.concatenate([lcol, np.ones((n, 1), dtype=np.float32)], axis=-1)
+    idx = faces.astype(np.uint32).reshape(-1)
+    v0, v1, v2 = pos[idx[0::3]], pos[idx[1::3]], pos[idx[2::3]]
+    nrm = np.cross(v1 - v0, v2 - v0)
+    nl = np.linalg.norm(nrm, axis=-1, keepdims=True)
+    nrm = (nrm / np.maximum(nl, 1e-12)).astype(np.float32)
+    vn = np.zeros_like(pos)
+    np.add.at(vn, idx[0::3], nrm)
+    np.add.at(vn, idx[1::3], nrm)
+    np.add.at(vn, idx[2::3], nrm)
+    nl2 = np.linalg.norm(vn, axis=-1, keepdims=True)
+    vn = (vn / np.maximum(nl2, 1e-12)).astype(np.float32)
+    ib = idx.tobytes()
+    pb = pos.tobytes()
+    nb = vn.tobytes()
+    cb = col.tobytes()
+    ib = ib + b"\x00" * (-len(ib) % 4)
+    bin_ = ib + pb + nb + cb
+    i_off, p_off, n_off, c_off = 0, len(ib), len(ib) + len(pb), len(ib) + len(pb) + len(nb)
+    acc = [
+        {"bufferView": 0, "componentType": 5125, "count": idx.size, "type": "SCALAR"},
+        {"bufferView": 1, "componentType": 5126, "count": n, "type": "VEC3",
+         "min": pos.min(0).tolist(), "max": pos.max(0).tolist()},
+        {"bufferView": 2, "componentType": 5126, "count": n, "type": "VEC3"},
+        {"bufferView": 3, "componentType": 5126, "count": n, "type": "VEC4"},
+    ]
+    bv = [
+        {"buffer": 0, "byteOffset": i_off, "byteLength": len(ib), "target": 34963},
+        {"buffer": 0, "byteOffset": p_off, "byteLength": len(pb), "target": 34962},
+        {"buffer": 0, "byteOffset": n_off, "byteLength": len(nb), "target": 34962},
+        {"buffer": 0, "byteOffset": c_off, "byteLength": len(cb), "target": 34962},
+    ]
+    doc = {
+        "asset": {"version": "2.0", "generator": "depth-tools"},
+        "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0, "name": "photo_points"}],
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 1, "NORMAL": 2, "COLOR_0": 3},
+            "indices": 0, "mode": 4}]}],
+        "buffers": [{"byteLength": len(bin_)}],
+        "bufferViews": bv,
+        "accessors": acc,
+    }
+    json_ = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+    json_ = json_ + b"\x20" * (-len(json_) % 4)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(json_) + 8 + len(bin_)))
+        f.write(struct.pack("<II", len(json_), 0x4E4F534A))
+        f.write(json_)
+        f.write(struct.pack("<II", len(bin_), 0x004E4942))
+        f.write(bin_)
+
+
 def write_ply(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
     X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
     h, w = np.asarray(dfloat).shape[:2]
@@ -592,6 +738,11 @@ class DepthUI(tk.Tk):
             ("spiral", "Математика: Спираль"),
             ("noise", "Математика: Шум-горы"),
             ("ridges", "Математика: Гребни"),
+            ("shape:torus", "Фигура: Тор"),
+            ("shape:sphere", "Фигура: Сфера"),
+            ("shape:helix", "Фигура: Пружина"),
+            ("shape:mobius", "Фигура: Лента Мёбиуса"),
+            ("shape:superell", "Фигура: Суперэллипсоид"),
         ]
         self._gen_labels = [l for _, l in self._gens]
         gen_box = ttk.Combobox(row, values=self._gen_labels, width=32, state="readonly")
@@ -1207,6 +1358,19 @@ class DepthUI(tk.Tk):
 
     def work(self, c):
         try:
+            gen = str(c.get("gen") or "none")
+            if gen.startswith("shape:"):
+                kind = gen.split(":", 1)[1]
+                size = float(c.get("gen_amp", 1.0) or 1.0)
+                freq = float(c.get("gen_freq", 2.0) or 2.0)
+                verts, cols, faces = gen_mesh(kind, size=size, freq=freq, res=96)
+                if c.get("ply_out"):
+                    _write_mesh_ply(f"{OUT}/photo_points.ply", verts, cols, faces)
+                if c.get("glb_out"):
+                    _write_mesh_glb(f"{OUT}/photo_points.glb", verts, cols, faces)
+                self.after(0, lambda: self.lbl_status.configure(
+                    text="Модель «%s» готова (PLY/GLB)" % kind))
+                return
             if c["model"] == "midas":
                 model = common.find_model("midas_v21_small_256.onnx")
                 if not os.path.exists(model):
