@@ -1441,6 +1441,8 @@ class DepthUI(tk.Tk):
                                 ds.append(_infer_depth(_mp, img, nw, nh,
                                                        metric=(c["model"] in METRIC_MODELS
                                                                and c["model"] != "large_mix")))
+                            if c["model"] == "large_mix":
+                                self.__dict__["_mix_ds"] = [np.asarray(_d, dtype=np.float32) for _d in ds]
                             d = np.mean(ds, axis=0)
                             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
@@ -1539,6 +1541,19 @@ class DepthUI(tk.Tk):
             side.paste(b, (w + 10, 0))
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
+            _mix_ds = self.__dict__.get("_mix_ds")
+            if _mix_ds:
+                for _tag, _di in zip(("large", "in", "out"), _mix_ds):
+                    di = np.asarray(Image.fromarray(_di).resize((w, h), Image.LANCZOS), dtype=np.float32)
+                    mn, mx = float(di.min()), float(di.max())
+                    di = np.clip((di - mn) / (mx - mn + 1e-8), 0.0, 1.0)
+                    Image.fromarray((di * 255).astype(np.uint8)).convert("RGB").save(f"{OUT}/photo_depth_{_tag}.png")
+                    cdi = colormap_rgb(di)
+                    write_exr(f"{OUT}/photo_colormap_{_tag}.exr", np.concatenate([
+                        _srgb_to_linear(cdi).astype(np.float32),
+                        di[..., None].astype(np.float32)], axis=-1))
+                    Image.fromarray((cdi * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap_{_tag}.png")
+                self.__dict__["_mix_ds"] = None
             hp = self.__dict__.get("_hybrid_prev")
             if hp is not None and c.get("hybrid") and hp.get("rgb") is not None:
                 # второй рендер не пропадает: сохраняем его отдельно
