@@ -1437,10 +1437,14 @@ class DepthUI(tk.Tk):
                                 nw, nh = 512, 384
 
                             ds = []
-                            for _mp in model_paths:
-                                ds.append(_infer_depth(_mp, img, nw, nh,
-                                                       metric=(c["model"] in METRIC_MODELS
-                                                               and c["model"] != "large_mix")))
+                            if c["model"] == "large_mix":
+                                for _n, _mp in zip(("large", "large_in", "large_out"), model_paths):
+                                    ds.append(_infer_depth(_mp, img, nw, nh,
+                                                           metric=_n in ("large_in", "large_out")))
+                            else:
+                                for _mp in model_paths:
+                                    ds.append(_infer_depth(_mp, img, nw, nh,
+                                                           metric=c["model"] in METRIC_MODELS))
                             if c["model"] == "large_mix":
                                 self.__dict__["_mix_ds"] = [np.asarray(_d, dtype=np.float32) for _d in ds]
                             d = np.mean(ds, axis=0)
