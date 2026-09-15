@@ -594,11 +594,11 @@ class DepthUI(tk.Tk):
             ("ridges", "Математика: Гребни"),
         ]
         self._gen_labels = [l for _, l in self._gens]
-        gen_box = ttk.Combobox(row, values=gen_labels, width=32, state="readonly")
+        gen_box = ttk.Combobox(row, values=self._gen_labels, width=32, state="readonly")
         gen_box.pack(side="left", padx=10, pady=4)
         kv = dict(self._gens)
         _cur = cfg.get("gen", "none")
-        gen_box.set(kv.get(_cur, "фото (по умолжанию)"))
+        gen_box.set(kv.get(_cur, "фото (по умолчанию)"))
         self._gen_box = gen_box
         ttk.Label(row, text="Ампл:").pack(side="left", padx=5, pady=4)
         self.vars["gen_amp"] = tk.StringVar(value=str(cfg.get("gen_amp", 1.0)))
