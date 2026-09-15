@@ -41,6 +41,9 @@ DEFAULTS = {
     "glb_out": False,
     "ply_fov": 90,
     "ply_scale": 1.0,
+    "gen": "none",
+    "gen_amp": 1.0,
+    "gen_freq": 2.0,
     "src_div": "1x",
     "guided": 45.0,
     "denoise": 0.0,
@@ -345,6 +348,97 @@ def _grid_faces(w, h):
     return faces
 
 
+def _meshgrid(h, w):
+    ys, xs = np.mgrid[0:h, 0:w]
+    return xs / (w - 1) * 2 - 1, ys / (h - 1) * 2 - 1
+
+
+def _fbm(h, w, seed, octaves=5, scale=2.6):
+    rng = np.random.RandomState(seed)
+    xs, ys = np.mgrid[0:h, 0:w].astype(np.float32)
+    total = np.zeros((h, w), dtype=np.float32)
+    norm = 0.0
+    amp = 1.0
+    per = max(2.0, float(scale))
+    for _ in range(octaves):
+        nx = int(np.ceil(w / per)) + 2
+        ny = int(np.ceil(h / per)) + 2
+        g = rng.rand(ny + 1, nx + 1)
+        xx = xs / per
+        yy = ys / per
+        gx = np.clip(xx.astype(int), 0, nx - 1)
+        gy = np.clip(yy.astype(int), 0, ny - 1)
+        wx = xx - xx.astype(int)
+        wy = yy - yy.astype(int)
+        v = (g[gy, gx] * (1 - wx) * (1 - wy)
+             + g[gy, gx + 1] * wx * (1 - wy)
+             + g[gy + 1, gx] * (1 - wx) * wy
+             + g[gy + 1, gx + 1] * wx * wy)
+        total += v * amp
+        norm += amp
+        amp *= 0.5
+        per *= 1.9
+    return total / norm
+
+
+def gen_depth_map(kind, h, w, amp=1.0, freq=2.0):
+    amp = max(0.05, float(amp))
+    f = max(0.01, float(freq))
+    kind = str(kind or "waves")
+    if kind == "waves":
+        X, Y = _meshgrid(h, w)
+        z = 0.5 + 0.5 * np.sin(X * np.pi * f) * np.sin(Y * np.pi * f)
+        z = z * 0.75 + 0.25 * np.sin((X + Y) * np.pi * f * 1.7)
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    elif kind == "bumps":
+        z = np.zeros((h, w), dtype=np.float32)
+        X, Y = _meshgrid(h, w)
+        rng = np.random.RandomState(11)
+        for _ in range(int(round(5 * amp))):
+            cx, cy = rng.uniform(-1.1, 1.1, 2)
+            r = rng.uniform(0.25, 0.75)
+            z += rng.uniform(0.5, 1.0) * np.exp(-(((X - cx) ** 2 + (Y - cy) ** 2) / (2 * r * r)))
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    elif kind == "craters":
+        z = np.zeros((h, w), dtype=np.float32)
+        X, Y = _meshgrid(h, w)
+        rng = np.random.RandomState(21)
+        for _ in range(int(round(3 * amp))):
+            cx, cy = rng.uniform(-1.0, 1.0, 2)
+            rc = rng.uniform(0.3, 0.8)
+            r = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+            z += rng.uniform(0.5, 1.0) * (np.exp(-((r - rc) ** 2) / 0.02) * (1 - np.exp(-((r + 0.05) * 8) ** 2)))
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    elif kind == "spiral":
+        X, Y = _meshgrid(h, w)
+        a = np.arctan2(Y, X) / (2 * np.pi)
+        r = np.sqrt(X * X + Y * Y)
+        z = 0.5 + 0.5 * np.sin((a * f + r * 2.2) * 2 * np.pi)
+        z = z * (1 - r * 0.4)
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    elif kind == "noise":
+        z = _fbm(h, w, int(round(f * 10 % 997)), octaves=5, scale=2.6 * f)
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    elif kind == "ridges":
+        z = _fbm(h, w, int(round(f * 10 % 991)), octaves=6, scale=2.2 * f)
+        z = 1.0 - np.abs(z * 2 - 1)
+        z = np.power(np.clip(z, 0.0, 1.0), 1.4)
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    else:
+        X, Y = _meshgrid(h, w)
+        z = 0.5 + 0.5 * np.sin(X * np.pi * f) * np.sin(Y * np.pi * f)
+        z = z - z.min()
+        z = z / (z.max() + 1e-8)
+    z = np.asarray(z, dtype=np.float32)
+    return np.clip(z * (float(amp) ** 0.6), 0.0, 1.0)
+
+
 def write_ply(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
     X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
     h, w = np.asarray(dfloat).shape[:2]
@@ -486,6 +580,35 @@ class DepthUI(tk.Tk):
         pad = dict(padx=10, pady=4, anchor="w")
 
         # --- фото ---
+        row = ttk.Frame(self)
+        row.pack(fill="x")
+        ttk.Label(row, text="Источник:").pack(side="left", **pad)
+        self.var_gen = tk.StringVar(value=str(cfg.get("gen", "none")))
+        self._gens = [
+            ("none", "фото (по умолчанию)"),
+            ("waves", "Математика: Волны"),
+            ("bumps", "Математика: Горки"),
+            ("craters", "Математика: Кратеры"),
+            ("spiral", "Математика: Спираль"),
+            ("noise", "Математика: Шум-горы"),
+            ("ridges", "Математика: Гребни"),
+        ]
+        self._gen_labels = [l for _, l in self._gens]
+        gen_box = ttk.Combobox(row, values=gen_labels, width=32, state="readonly")
+        gen_box.pack(side="left", padx=10, pady=4)
+        kv = dict(self._gens)
+        _cur = cfg.get("gen", "none")
+        gen_box.set(kv.get(_cur, "фото (по умолжанию)"))
+        self._gen_box = gen_box
+        ttk.Label(row, text="Ампл:").pack(side="left", padx=5, pady=4)
+        self.vars["gen_amp"] = tk.StringVar(value=str(cfg.get("gen_amp", 1.0)))
+        ttk.Spinbox(row, from_=0.2, to=5, increment=0.1, width=5,
+                    textvariable=self.vars["gen_amp"]).pack(side="left")
+        ttk.Label(row, text="Частота:").pack(side="left", padx=5, pady=4)
+        self.vars["gen_freq"] = tk.StringVar(value=str(cfg.get("gen_freq", 2.0)))
+        ttk.Spinbox(row, from_=0.5, to=20, increment=0.5, width=5,
+                    textvariable=self.vars["gen_freq"]).pack(side="left")
+
         row = ttk.Frame(self)
         row.pack(fill="x")
         ttk.Label(row, text="Фото:").pack(side="left", **pad)
@@ -1045,6 +1168,20 @@ class DepthUI(tk.Tk):
         c["ply_out"] = bool(self.vars["ply_out"].get())
         c["glb_out"] = bool(self.vars["glb_out"].get())
         try:
+            gen_sel = self._gen_box.get()
+        except Exception:
+            gen_sel = gen_labels and (gen_labels[0])
+        gen_map = dict((v, k) for k, v in self._gens)
+        c["gen"] = gen_map.get(gen_sel, "none")
+        try:
+            c["gen_amp"] = float(str(self.vars["gen_amp"].get()).replace(",", "."))
+        except ValueError:
+            c["gen_amp"] = 1.0
+        try:
+            c["gen_freq"] = float(str(self.vars["gen_freq"].get()).replace(",", "."))
+        except ValueError:
+            c["gen_freq"] = 2.0
+        try:
             c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
         except ValueError:
             c["ply_fov"] = 90.0
@@ -1085,69 +1222,86 @@ class DepthUI(tk.Tk):
                         text=f"Скачивание модели {c['model'].capitalize()}..."))
                     download_model(c["model"], model)
                     self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
-            if str(c["src"]).lower().endswith(".exr"):
-                img = _exr_load_rgb(c["src"])
-                if img is None:
-                    raise ValueError(f"Не удалось прочитать EXR: {c['src']}")
+            gen = str(c.get("gen") or "none")
+            if gen != "none":
+                out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
+                try:
+                    w0, h0 = [int(x) for x in out_size.split("x")]
+                except ValueError:
+                    w0, h0 = 512, 512
+                if w0 < 2 or h0 < 2:
+                    w0, h0 = 512, 512
+                nw, nh = w0, h0
+                dfull = gen_depth_map(gen, h0, w0,
+                                      float(c.get("gen_amp", 1.0) or 1.0),
+                                      float(c.get("gen_freq", 2.0) or 2.0))
+                dfull = np.asarray(dfull, dtype=np.float32)
+                img = Image.fromarray((colormap_rgb(dfull) * 255).astype(np.uint8)).convert("RGB")
+                d = None
             else:
-                img = Image.open(c["src"]).convert("RGB")
-            div = int("".join(ch for ch in str(c.get("src_div", 1)) if ch.isdigit()) or 1)
-            if div > 1:
-                img = img.resize((max(1, img.width // div), max(1, img.height // div)), Image.LANCZOS)
-            dn = float(c.get("denoise", 0) or 0)
-            if dn > 0:
-                arr = np.asarray(img, dtype=np.float32) / 255.0
-                r = int(1 + dn * 0.05)
-                eps = 10.0 ** (-4.0 + dn * 0.02)
-                arr = np.stack([guided_filter(_box_f(arr[..., k], r), arr[..., k], r, eps)
-                                for k in range(3)], axis=2)
-                img = Image.fromarray((np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
-            nw = int(c["in_w"]) - int(c["in_w"]) % 14
-            nh = int(c["in_h"]) - int(c["in_h"]) % 14
-            if c["model"] == "midas":
-                nw = nh = 256
-            elif c["model"] == "zoe":
-                nw, nh = 512, 384
+                            if str(c["src"]).lower().endswith(".exr"):
+                                img = _exr_load_rgb(c["src"])
+                                if img is None:
+                                    raise ValueError(f"Не удалось прочитать EXR: {c['src']}")
+                            else:
+                                img = Image.open(c["src"]).convert("RGB")
+                            div = int("".join(ch for ch in str(c.get("src_div", 1)) if ch.isdigit()) or 1)
+                            if div > 1:
+                                img = img.resize((max(1, img.width // div), max(1, img.height // div)), Image.LANCZOS)
+                            dn = float(c.get("denoise", 0) or 0)
+                            if dn > 0:
+                                arr = np.asarray(img, dtype=np.float32) / 255.0
+                                r = int(1 + dn * 0.05)
+                                eps = 10.0 ** (-4.0 + dn * 0.02)
+                                arr = np.stack([guided_filter(_box_f(arr[..., k], r), arr[..., k], r, eps)
+                                                for k in range(3)], axis=2)
+                                img = Image.fromarray((np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+                            nw = int(c["in_w"]) - int(c["in_w"]) % 14
+                            nh = int(c["in_h"]) - int(c["in_h"]) % 14
+                            if c["model"] == "midas":
+                                nw = nh = 256
+                            elif c["model"] == "zoe":
+                                nw, nh = 512, 384
 
-            import subprocess
-            import sys
-            import tempfile
-            import time
-            worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_depth_infer.py")
-            tmp_in = tmp_out = None
-            try:
-                tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                img.save(tf, "PNG")
-                tf.close()
-                tmp_in = tf.name
-                tf = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
-                tf.close()
-                tmp_out = tf.name
-                proc = subprocess.Popen([sys.executable, worker, model, str(nw), str(nh), tmp_in, tmp_out])
-                total = total_ram_mb()
-                floor = max(400.0, (total or 0.0) * 0.08)
-                while proc.poll() is None:
-                    time.sleep(0.2)
-                    av = avail_ram_mb()
-                    if av is not None and av < floor:
-                        proc.kill()
-                        raise MemoryError("Обработка остановлена: свободная ОЗУ закончилась.\n"
-                                          "Уменьшите «Множитель» или включите «Эконом ОЗУ».")
-                if proc.returncode != 0:
-                    raise RuntimeError(f"Ошибка вычисления глубины (код {proc.returncode}).")
-                d = np.load(tmp_out).astype(np.float32)
-            finally:
-                for t in (tmp_in, tmp_out):
-                    try:
-                        if t:
-                            os.remove(t)
-                    except Exception:
-                        pass
-            d = d - d.min()
-            d = d / (d.max() + 1e-8)
-            if c["model"] in METRIC_MODELS:
-                d = 1.0 - d
-            dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
+                            import subprocess
+                            import sys
+                            import tempfile
+                            import time
+                            worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_depth_infer.py")
+                            tmp_in = tmp_out = None
+                            try:
+                                tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                                img.save(tf, "PNG")
+                                tf.close()
+                                tmp_in = tf.name
+                                tf = tempfile.NamedTemporaryFile(suffix=".npy", delete=False)
+                                tf.close()
+                                tmp_out = tf.name
+                                proc = subprocess.Popen([sys.executable, worker, model, str(nw), str(nh), tmp_in, tmp_out])
+                                total = total_ram_mb()
+                                floor = max(400.0, (total or 0.0) * 0.08)
+                                while proc.poll() is None:
+                                    time.sleep(0.2)
+                                    av = avail_ram_mb()
+                                    if av is not None and av < floor:
+                                        proc.kill()
+                                        raise MemoryError("Обработка остановлена: свободная ОЗУ закончилась.\n"
+                                                          "Уменьшите «Множитель» или включите «Эконом ОЗУ».")
+                                if proc.returncode != 0:
+                                    raise RuntimeError(f"Ошибка вычисления глубины (код {proc.returncode}).")
+                                d = np.load(tmp_out).astype(np.float32)
+                            finally:
+                                for t in (tmp_in, tmp_out):
+                                    try:
+                                        if t:
+                                            os.remove(t)
+                                    except Exception:
+                                        pass
+                            d = d - d.min()
+                            d = d / (d.max() + 1e-8)
+                            if c["model"] in METRIC_MODELS:
+                                d = 1.0 - d
+                            dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             g_strength = float(c.get("guided", 0) or 0)
             if g_strength > 0:
                 guide = np.asarray(img.convert("L"), dtype=np.float32) / 255.0
