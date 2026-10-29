@@ -36,25 +36,45 @@ call :log "Устанавливаю Python тихо..."
 "%PYINST%" /quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_pip=1
 if not exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" goto :err_py
 set "PYCMD=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+set "PYRUN="%LOCALAPPDATA%\Programs\Python\Python312\python.exe""
 call :log "Python 3.12 установлен: %PYCMD%"
 goto :main
 
 rem ---------- основной процесс ----------
 :main
 echo [1/5] Виртуальное окружение...
-if exist ".venv\Scripts\python.exe" goto :venv_ok
-call :log "Создаю виртуальное окружение (%PYCMD% -m venv .venv)"
-"%PYCMD%" -m venv .venv
-if %errorlevel% neq 0 goto :err
+call :log "Интерпретатор: %PYCMD%"
+%PYRUN% -c "import sys; print(sys.version)" >>"%LOG%" 2>&1
+if not exist ".venv\Scripts\python.exe" goto :venv_recreate
+".venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+if errorlevel 1 goto :venv_recreate
+".venv\Scripts\python.exe" -m pip --version >nul 2>&1
+if errorlevel 1 goto :venv_recreate
+goto :venv_ok
+:venv_recreate
+call :log "Создаю виртуальное окружение (%PYCMD% -m venv --clear .venv)"
+%PYRUN% -m venv --clear .venv
+if errorlevel 1 goto :err
 :venv_ok
 call :log "venv готово"
 
 echo [2/5] Установка зависимостей (только готовые колёса)...
-".venv\Scripts\python.exe" -m pip install --upgrade pip >>"%LOG%" 2>&1
-call :log "pip обновлён"
+set "PY=.venv\Scripts\python.exe"
+rem pip 26.x тащит packaging 26.2 с "жадными" квантификаторами,
+rem который падает на CPython < 3.11.5 (Invalid version: '0.dev0')
+"%PY%" -m pip --version >nul 2>&1
+if errorlevel 1 (
+    call :log "pip в venv не работает - восстанавливаю через ensurepip"
+    "%PY%" -m ensurepip --upgrade --default-pip >>"%LOG%" 2>&1
+)
+"%PY%" -m pip install --upgrade "pip<26" >>"%LOG%" 2>&1
+if errorlevel 1 call :log "Обновление pip не удалось - работаю со встроенным"
+"%PY%" -m pip --version >>"%LOG%" 2>&1
+if errorlevel 1 goto :err_pip
+call :log "pip готов"
 echo       Устанавливаю пакеты, подождите...
-".venv\Scripts\python.exe" -m pip install --only-binary=:all: -r requirements.txt >>"%LOG%" 2>&1
-if %errorlevel% neq 0 goto :err_pip
+"%PY%" -m pip install --only-binary=:all: -r requirements.txt >>"%LOG%" 2>&1
+if errorlevel 1 goto :err_pip
 call :log "Зависимости установлены"
 
 echo [3/5] Проверка модели...
@@ -62,7 +82,7 @@ set "MODELDIR=%USERPROFILE%\Z-depth"
 if exist "%MODELDIR%\depth_anything_v2_small.onnx" goto :model_ok
 call :log "Модель не найдена, скачиваю ~99 МБ в %MODELDIR%"
 echo       Модель не найдена, скачиваю ~99 МБ...
-".venv\Scripts\python.exe" download_model.py >>"%LOG%" 2>&1
+"%PY%" download_model.py >>"%LOG%" 2>&1
 if %errorlevel% neq 0 goto :err_model
 :model_ok
 call :log "Модель на месте"
@@ -82,18 +102,22 @@ exit /b %RC%
 rem ---------- поиск Python 3.11/3.12 ----------
 :find_python
 set "PYCMD="
+set "PYRUN="
 if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
     set "PYCMD=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    set "PYRUN="%LOCALAPPDATA%\Programs\Python\Python312\python.exe""
     exit /b 0
 )
 call :check_version py -3
 if %errorlevel%==0 (
     set "PYCMD=py -3"
+    set "PYRUN=py -3"
     exit /b 0
 )
 call :check_version python
 if %errorlevel%==0 (
     set "PYCMD=python"
+    set "PYRUN=python"
     exit /b 0
 )
 call :log "Python 3.11/3.12 не найден"
@@ -120,8 +144,9 @@ exit /b 1
 call :log "ОШИБКА: не удалось установить зависимости (см. выше в логе)"
 echo.
 echo Не удалось установить зависимости. Подробности выше в %LOG%
-echo Причина: для вашего Python нет готовых колёс (чаще всего Python новее 3.12).
-echo Запустите этот файл ещё раз - он сам поставит Python 3.12.
+echo Причина: для вашего Python нет готовых колёс (чаще всего Python новее 3.12)
+echo или повреждено окружение .venv.
+echo Удалите папку .venv рядом с этим файлом и запустите его снова.
 pause
 exit /b 1
 

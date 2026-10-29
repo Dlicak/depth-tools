@@ -19,11 +19,18 @@ fi
 
 # 2. виртуальное окружение
 echo "[2/4] Виртуальное окружение..."
-if [ ! -x ".venv/bin/python" ]; then
-    python3 -m venv .venv
+PY=".venv/bin/python"
+if [ ! -x "$PY" ] || ! "$PY" -m pip --version >/dev/null 2>&1; then
+    echo "      Окружение отсутствует или повреждено, пересоздаю..."
+    python3 -m venv --clear .venv
 fi
-.venv/bin/pip install --upgrade pip >/dev/null
-.venv/bin/pip install --only-binary=:all: -r requirements.txt
+# pip 26.x тащит packaging 26.2 с "жадными" квантификаторами,
+# который падает на CPython < 3.11.5 (Invalid version: '0.dev0')
+if ! "$PY" -m pip install --upgrade 'pip<26' >/dev/null 2>&1; then
+    "$PY" -m ensurepip --upgrade --default-pip >/dev/null 2>&1 || true
+fi
+"$PY" -m pip --version >/dev/null
+"$PY" -m pip install --only-binary=:all: -r requirements.txt
 
 # 3. модель
 echo "[3/4] Проверка модели..."
