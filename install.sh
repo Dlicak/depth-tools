@@ -17,6 +17,13 @@ else
     echo "[1/4] python3 найден."
 fi
 
+# alpha/beta/rc не годятся: в них нет нужных исправлений stdlib и ломается pip
+if ! python3 -c 'import sys; v=sys.version_info; raise SystemExit(0 if v[:2] >= (3,11) and v.releaselevel == "final" else 1)' >/dev/null 2>&1; then
+    echo "ОШИБКА: нужен финальный Python 3.11+ (сейчас: $(python3 -V 2>&1))." >&2
+    echo "Установите стабильную версию: https://www.python.org/downloads/" >&2
+    exit 1
+fi
+
 # 2. виртуальное окружение
 echo "[2/4] Виртуальное окружение..."
 PY=".venv/bin/python"
