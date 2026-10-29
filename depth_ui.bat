@@ -35,6 +35,8 @@ if not exist "%PYINST%" (
 call :log "Устанавливаю Python тихо..."
 "%PYINST%" /quiet InstallAllUsers=0 PrependPath=1 Include_launcher=1 Include_pip=1
 if not exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" goto :err_py
+call :check_version "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+if errorlevel 1 goto :err_py
 set "PYCMD=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 set "PYRUN="%LOCALAPPDATA%\Programs\Python\Python312\python.exe""
 call :log "Python 3.12 установлен: %PYCMD%"
@@ -74,7 +76,12 @@ if errorlevel 1 goto :err_pip
 call :log "pip готов"
 echo       Устанавливаю пакеты, подождите...
 "%PY%" -m pip install --only-binary=:all: -r requirements.txt >>"%LOG%" 2>&1
+if not errorlevel 1 goto :deps_ok
+call :log "pip вернул ошибку - проверяю, что пакеты всё же установились"
+"%PY%" -c "import onnxruntime, numpy, PIL" >>"%LOG%" 2>&1
 if errorlevel 1 goto :err_pip
+call :log "Пакеты на месте, несмотря на ошибку pip - продолжаю"
+:deps_ok
 call :log "Зависимости установлены"
 
 echo [3/5] Проверка модели...
@@ -103,11 +110,15 @@ rem ---------- поиск Python 3.11/3.12 ----------
 :find_python
 set "PYCMD="
 set "PYRUN="
-if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
-    set "PYCMD=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-    set "PYRUN="%LOCALAPPDATA%\Programs\Python\Python312\python.exe""
-    exit /b 0
-)
+if not exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" goto :find_py_launcher
+call :check_version "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+if errorlevel 1 goto :find_py_bad_312
+set "PYCMD=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+set "PYRUN="%LOCALAPPDATA%\Programs\Python\Python312\python.exe""
+exit /b 0
+:find_py_bad_312
+call :log "Python в %LOCALAPPDATA%\Programs\Python\Python312 не подходит (нужен финальный 3.11/3.12)"
+:find_py_launcher
 call :check_version py -3
 if %errorlevel%==0 (
     set "PYCMD=py -3"
@@ -125,7 +136,7 @@ exit /b 1
 
 rem ---------- проверка версии ----------
 :check_version
-%* -c "import sys; sys.exit(0 if sys.version_info[:2] in ((3,11),(3,12)) else 1)" >nul 2>nul
+%* -c "import sys; v=sys.version_info; sys.exit(0 if v[:2] in ((3,11),(3,12)) and v.releaselevel=='final' else 1)" >nul 2>nul
 exit /b %errorlevel%
 
 rem ---------- лог ----------
@@ -155,7 +166,8 @@ call :log "ОШИБКА: не удалось скачать/установить
 echo.
 echo Не удалось установить Python 3.12. Скачайте вручную:
 echo   https://www.python.org/downloads/  (3.12.x, галочка "Add Python to PATH")
-echo и запустите этот файл снова.
+echo Если Python уже стоит - удалите старые версии (особенно 3.12 alpha/beta)
+echo в "Установка и удаление программ" и запустите файл снова.
 pause
 exit /b 1
 
