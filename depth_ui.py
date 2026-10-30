@@ -15,6 +15,10 @@ CONFIG = os.path.join(common.data_dir(), "settings.json")
 OUT = common.data_dir()
 SRC = common.default_src()
 
+# Вертикальный угол обзора для облака точек и GLB. Раньше его крутили
+# ползунком «FOV PLY»; оставили одно разумное значение — как у обычной камеры.
+DEFAULT_FOV_Y = 60.0
+
 DEFAULTS = {
     "model": "small",
     "depth_gamma": 1.0,
@@ -34,8 +38,6 @@ DEFAULTS = {
     "normal_exr": False,
     "ply_out": False,
     "glb_out": False,
-    "ply_fov": 90,
-    "ply_scale": 1.0,
     "gen": "none",
     "gen_amp": 1.0,
     "gen_freq": 2.0,
@@ -45,11 +47,13 @@ DEFAULTS = {
 }
 
 cfg = DEFAULTS.copy()
+_raw = {}
 if os.path.exists(CONFIG):
     try:
-        cfg.update(json.load(open(CONFIG)))
+        _raw = json.load(open(CONFIG))
+        cfg.update(_raw)
     except Exception:
-        pass
+        _raw = {}
 
 # Миграция на единый «Множитель входа» (раньше вход = размер фото × множитель,
 # а «Эконом ОЗУ» давал 200 px × множитель). Число пересчитываем так, чтобы
@@ -63,6 +67,16 @@ if cfg.get("_input_scheme") != "200x":
         if _long > 0:
             cfg["input_mult"] = max(1.0, min(10.0, round(_long / 200.0)))
     cfg["_input_scheme"] = "200x"
+
+# «Карта нормалей» в старых настройках называлась normal_png
+if "normal_exr" not in _raw and "normal_png" in _raw:
+    cfg["normal_exr"] = bool(_raw["normal_png"])
+
+# Убранные из интерфейса ключи: иначе они тянутся из старого settings.json
+for _stale in ("ply_fov", "ply_scale", "compress", "overlay_alpha", "focus_enable",
+               "focus_x", "focus_y", "focus_radius", "dof_strength", "normal_png",
+               "gen", "gen_amp", "gen_freq", "fx_strength"):
+    cfg.pop(_stale, None)
 
 STATE = {"busy": False}
 
@@ -376,7 +390,7 @@ def normal_map(depth, radius=6.0, strength=2.5):
     return np.stack([nx / ln, ny / ln, nz / ln], axis=-1).astype(np.float32) * 0.5 + 0.5
 
 
-def _points_field(dfloat, img_rgb, fov_y=90.0, scale=1.0):
+def _points_field(dfloat, img_rgb, fov_y=DEFAULT_FOV_Y, scale=1.0):
     d = np.clip(np.asarray(dfloat, dtype=np.float32), 0.0, 1.0)
     h, w = d.shape
     z = np.clip(d, 0.05, 1.0) * float(scale)
@@ -384,20 +398,12 @@ def _points_field(dfloat, img_rgb, fov_y=90.0, scale=1.0):
     cy = (h - 1) / 2.0
     fy = (h / 2.0) / math.tan(math.radians(max(1.0, float(fov_y)) / 2.0))
     ys, xs = np.mgrid[0:h, 0:w]
-    X = ((xs - cx) * z / fy)
-    Y = (-(ys - cy) * z / fy)
+    # float32: при выходе 4x точек ~17 млн, на float64 это лишние сотни МБ
+    k = z.astype(np.float32) / np.float32(fy)
+    X = ((xs - cx) * k).astype(np.float32)
+    Y = (-(ys - cy) * k).astype(np.float32)
     rgb = np.asarray(img_rgb.convert("RGB"), dtype=np.uint8).reshape(-1, 3)
-    return X.reshape(-1), Y.reshape(-1), z.reshape(-1), rgb
-
-
-def _grid_faces(w, h):
-    faces = []
-    for i in range(h - 1):
-        base = i * w
-        for j in range(w - 1):
-            a = base + j
-            faces.append((a, a + 1, a + w + 1, a + w))
-    return faces
+    return X.reshape(-1), Y.reshape(-1), z.reshape(-1).astype(np.float32), rgb
 
 
 def _meshgrid(h, w):
@@ -601,7 +607,7 @@ def _write_mesh_ply(path, verts, cols, faces):
             "property float x\nproperty float y\nproperty float z\n"
             "property uchar red\nproperty uchar green\nproperty uchar blue\n"
             "element face %d\nproperty list uchar int vertex_indices\n"
-            "end_header\n" % (n, len(faces))
+            "end_header\n" % (n, n_faces)
         )
         np.savetxt(f, np.column_stack([verts, cols]).astype(np.float32),
                    fmt="%.6f %.6f %.6f %d %d %d")
@@ -708,29 +714,38 @@ def _infer_depth(model_path, img, nw, nh, metric=False):
     return d
 
 
-def write_ply(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
+def write_ply(path, dfloat, img_rgb, fov_y=DEFAULT_FOV_Y, scale=1.0):
     X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
     h, w = np.asarray(dfloat).shape[:2]
     n = X.size
-    faces = _grid_faces(w, h)
+    n_faces = (h - 1) * (w - 1)
     with open(path, "w") as f:
         f.write(
             "ply\nformat ascii 1.0\nelement vertex %d\n"
             "property float x\nproperty float y\nproperty float z\n"
             "property uchar red\nproperty uchar green\nproperty uchar blue\n"
             "element face %d\nproperty list uchar int vertex_indices\n"
-            "end_header\n" % (n, len(faces))
+            "end_header\n" % (n, n_faces)
         )
-        np.savetxt(
-            f,
-            np.column_stack([X, Y, z, rgb[:, 0], rgb[:, 1], rgb[:, 2]]),
-            fmt="%.6f %.6f %.6f %d %d %d",
-        )
-        for fc in faces:
-            f.write("4 %d %d %d %d\n" % fc)
+        # пишем полосами по строкам: на выходе 4x склеивание всех точек в один
+        # массив съедало больше гигабайта ОЗУ ради текстового файла
+        Xr, Yr, zr = X.reshape(h, w), Y.reshape(h, w), z.reshape(h, w)
+        rgbr = rgb.reshape(h, w, 3)
+        step = max(1, 2000000 // max(1, w))
+        for i0 in range(0, h, step):
+            i1 = min(h, i0 + step)
+            blk = np.column_stack([Xr[i0:i1].ravel(), Yr[i0:i1].ravel(), zr[i0:i1].ravel(),
+                                   rgbr[i0:i1].reshape(-1, 3)])
+            np.savetxt(f, blk, fmt="%.6f %.6f %.6f %d %d %d")
+        # грани — против часовой стрелки со стороны камеры (a, a+w, a+w+1, a+1),
+        # иначе в Blender и просмотрщиках модель выглядит вывернутой наизнанку
+        for i in range(h - 1):
+            base = i * w
+            f.writelines("4 %d %d %d %d\n" % (base + j, base + j + w, base + j + w + 1, base + j + 1)
+                         for j in range(w - 1))
 
 
-def write_glb(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
+def write_glb(path, dfloat, img_rgb, fov_y=DEFAULT_FOV_Y, scale=1.0):
     import struct
     X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
     h, w = dfloat.shape[0], dfloat.shape[1]
@@ -738,14 +753,18 @@ def write_glb(path, dfloat, img_rgb, fov_y=90.0, scale=1.0):
     pos = np.stack([X, Y, z], axis=-1).astype(np.float32)
     lcol = ((rgb / 255.0) ** 2.2).astype(np.float32)
     col = np.concatenate([lcol, np.ones((n, 1), dtype=np.float32)], axis=-1)
-    faces = []
-    for i in range(h - 1):
-        base = i * w
-        for j in range(w - 1):
-            a = base + j
-            faces.append((a, a + 1, a + w + 1))
-            faces.append((a, a + w + 1, a + w))
-    idx = np.asarray(faces, dtype=np.uint32).reshape(-1)
+    # индексы треугольников считаем сразу массивом: питоновский список на
+    # 2 млн граней — это сотни мегабайт и лишние секунды
+    a = (np.arange(h - 1, dtype=np.uint32)[:, None] * w
+         + np.arange(w - 1, dtype=np.uint32)[None, :]).ravel()
+    idx = np.empty(a.size * 6, dtype=np.uint32)
+    # обход против часовой стрелки со стороны камеры
+    idx[0::6] = a
+    idx[1::6] = a + w
+    idx[2::6] = a + w + 1
+    idx[3::6] = a
+    idx[4::6] = a + w + 1
+    idx[5::6] = a + 1
     v0, v1, v2 = pos[idx[0::3]], pos[idx[1::3]], pos[idx[2::3]]
     nrm = np.cross(v1 - v0, v2 - v0)
     nl = np.linalg.norm(nrm, axis=-1, keepdims=True)
@@ -843,7 +862,10 @@ class DepthUI(tk.Tk):
         self.title("Карта глубины — настройки")
         # окно сразу достаточно широкое/высокое: ряд галочек не обрезается,
         # а предпросмотру достаётся заметная часть высоты
-        self.geometry("1280x980")
+        # Окно подстраивается под экран: на ноутбуке 1366×768 низ не уезжает за край
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry("%dx%d" % (max(980, min(1280, sw - 80)), max(700, min(980, sh - 90))))
+        self.minsize(980, 700)
         self.configure(bg="#1e1e1e")
 
         self.vars = {}
@@ -868,7 +890,10 @@ class DepthUI(tk.Tk):
             _m = "small"
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
-                  "large_in": "Large Indoor", "large_out": "Large Outdoor"}
+                  "large_in": "Large Indoor", "large_out": "Large Outdoor",
+                  # large_mix в этом окне не выбирается, но старый settings.json
+                  # мог его сохранить — иначе KeyError при запуске
+                  "large_mix": "Large"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
@@ -949,8 +974,7 @@ class DepthUI(tk.Tk):
                         variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
         row = ttk.Frame(self)
         row.pack(fill="x")
-        self.vars["normal_exr"] = tk.BooleanVar(
-            value=bool(cfg.get("normal_exr", cfg.get("normal_png", False))))
+        self.vars["normal_exr"] = tk.BooleanVar(value=bool(cfg.get("normal_exr", False)))
         ttk.Checkbutton(row, text="Карта нормалей (EXR)",
                         variable=self.vars["normal_exr"]).pack(side="left", padx=10, pady=4)
         self.vars["ply_out"] = tk.BooleanVar(value=bool(cfg.get("ply_out", False)))
@@ -959,13 +983,6 @@ class DepthUI(tk.Tk):
         self.vars["glb_out"] = tk.BooleanVar(value=bool(cfg.get("glb_out", False)))
         ttk.Checkbutton(row, text="Модель 3D (GLB)",
                         variable=self.vars["glb_out"]).pack(side="left", padx=10, pady=4)
-        ttk.Label(row, text="FOV PLY:").pack(side="left", padx=5, pady=4)
-        self.vars["ply_fov"] = tk.StringVar(value=str(cfg.get("ply_fov", 90)))
-        ttk.Spinbox(row, from_=20, to=170, width=6, textvariable=self.vars["ply_fov"]).pack(side="left")
-        ttk.Label(row, text="Масштаб PLY:").pack(side="left", padx=5, pady=4)
-        self.vars["ply_scale"] = tk.StringVar(value=str(cfg.get("ply_scale", 1.0)))
-        ttk.Spinbox(row, from_=0.1, to=20, increment=0.1, width=6,
-                    textvariable=self.vars["ply_scale"]).pack(side="left")
 
         row = ttk.Frame(self)
         row.pack(fill="x")
@@ -1012,6 +1029,7 @@ class DepthUI(tk.Tk):
         self._prev_rel = None
         self._cur_rel = None
         self._src_img = None
+        self._prev_src = None
 
         self.bind("<Configure>", lambda _e: self._schedule_resize())
 
@@ -1313,6 +1331,10 @@ class DepthUI(tk.Tk):
                       "large outdoor": "large_out"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
+        if not str(c["src"]).strip():
+            raise ValueError("Не выбрано фото: укажите путь или нажмите «Поиск фото».")
+        if not os.path.exists(str(c["src"])):
+            raise ValueError(f"Файл не найден:\n{c['src']}")
         if str(c["src"]).lower().endswith(".exr"):
             src_img = _exr_load_rgb(c["src"])
             if src_img is None:
@@ -1343,23 +1365,18 @@ class DepthUI(tk.Tk):
         c["normal_exr"] = bool(self.vars["normal_exr"].get())
         c["ply_out"] = bool(self.vars["ply_out"].get())
         c["glb_out"] = bool(self.vars["glb_out"].get())
-        c["gen"] = "none"
-        c["gen_amp"] = 1.0
-        c["gen_freq"] = 2.0
-        try:
-            c["ply_fov"] = float(str(self.vars["ply_fov"].get()).replace(",", "."))
-        except ValueError:
-            c["ply_fov"] = 90.0
-        try:
-            c["ply_scale"] = float(str(self.vars["ply_scale"].get()).replace(",", "."))
-        except ValueError:
-            c["ply_scale"] = 1.0
         return c
 
     def run(self):
         if STATE["busy"]:
             return
-        c = self.collect()
+        try:
+            c = self.collect()
+        except Exception as e:
+            # файл не выбран/не читается — иначе ошибка уходила только в консоль
+            self.lbl_status.configure(text="Ошибка")
+            messagebox.showerror("Ошибка", str(e))
+            return
         json.dump(c, open(CONFIG, "w"), indent=2)
         STATE["busy"] = True
         self.btn_run.configure(state="disabled")
@@ -1624,11 +1641,9 @@ class DepthUI(tk.Tk):
             if c.get("ply_out") or c.get("glb_out"):
                 try:
                     if c.get("ply_out"):
-                        write_ply(f"{OUT}/photo_points.ply", dfloat, img_out,
-                                  fov_y=c.get("ply_fov", 90.0), scale=c.get("ply_scale", 1.0))
+                        write_ply(f"{OUT}/photo_points.ply", dfloat, img_out)
                     if c.get("glb_out"):
-                        write_glb(f"{OUT}/photo_points.glb", dfloat, img_out,
-                                  fov_y=c.get("ply_fov", 90.0), scale=c.get("ply_scale", 1.0))
+                        write_glb(f"{OUT}/photo_points.glb", dfloat, img_out)
                 except Exception as e:
                     print("ply/glb error:", e)
 
@@ -1709,7 +1724,7 @@ class DepthUI(tk.Tk):
             return self._cur_col, self._prev_col
         if self.type_idx == 2:
             return self._cur_rel, self._prev_rel
-        return self._src_img, self._src_img
+        return self._src_img, self._prev_src
 
     def done(self, depth, col, rel, src):
         STATE["busy"] = False
@@ -1719,6 +1734,7 @@ class DepthUI(tk.Tk):
             self._prev_img = self._cur_img
             self._prev_col = self._cur_col
             self._prev_rel = self._cur_rel
+            self._prev_src = self._src_img
         self._cur_img = depth.copy()
         self._cur_col = col.copy()
         self._cur_rel = rel.copy()
