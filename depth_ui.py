@@ -26,12 +26,12 @@ DEFAULTS = {
     "out_size": "300x300",
     "invert": False,
     "render2": False,
-    "compress": False,
+    "input_mult": 6.0,
     "depth16": False,
     "depth32": False,
     "depth_exr": False,
     "cmap_exr": False,
-    "normal_png": False,
+    "normal_exr": False,
     "ply_out": False,
     "glb_out": False,
     "ply_fov": 90,
@@ -50,6 +50,19 @@ if os.path.exists(CONFIG):
         cfg.update(json.load(open(CONFIG)))
     except Exception:
         pass
+
+# Миграция на единый «Множитель входа» (раньше вход = размер фото × множитель,
+# а «Эконом ОЗУ» давал 200 px × множитель). Число пересчитываем так, чтобы
+# прошлый вход модели остался прежним: mult = in_w / 200.
+if cfg.get("_input_scheme") != "200x":
+    if not cfg.get("compress"):
+        try:
+            _long = max(float(cfg.get("in_w") or 0), float(cfg.get("in_h") or 0))
+        except Exception:
+            _long = 0.0
+        if _long > 0:
+            cfg["input_mult"] = max(1.0, min(10.0, round(_long / 200.0)))
+    cfg["_input_scheme"] = "200x"
 
 STATE = {"busy": False}
 
@@ -298,7 +311,9 @@ def png_write_rgb16(path, rgb01):
     import struct
     h, w = rgb01.shape[:2]
     v = np.clip(rgb01, 0.0, 1.0)
-    data = np.round(v * 65535.0).astype(np.uint16)
+    # PNG хранит 16-битные отсчёты в big-endian, а .astype(uint16) на x86 даёт
+    # little-endian — без ">u2" байты меняются местами и цвета читаются мусором
+    data = np.round(v * 65535.0).astype(">u2")
     raw = b"".join(b"\x00" + data[y].tobytes() for y in range(h))
 
     def chunk(tag, payload):
@@ -309,36 +324,56 @@ def png_write_rgb16(path, rgb01):
         f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
+def _depth01(depth):
+    """Приводит карту к float32 0..1 (1.0 = близко к камере)."""
+    if isinstance(depth, Image.Image):
+        return np.asarray(depth.convert("L"), dtype=np.float32) / 255.0
+    d = np.asarray(depth, dtype=np.float32)
+    if d.ndim == 3:
+        d = d[..., 0]
+    return np.clip(np.nan_to_num(d), 0.0, 1.0)
+
+
+def _slope_field(depth, radius=6.0, strength=1.5):
+    """Наклоны карты глубины (dh/dx, dh/dy) в единицах, не зависящих от размера.
+
+    Без авто-масштаба наклоны в 0..1-карте порядка 0.001 на пиксель: края
+    выжигаются, а середина остаётся плоской. Масштаб берём по 90-му
+    процентилю, а всё вместе нормируем на «1000 px», чтобы картинка
+    выглядела одинаково при выходе 300 px и 3000 px.
+    """
+    d = _depth01(depth)
+    h, w = d.shape
+    k = max(1.0, max(h, w) / 1000.0)
+    d = _blur_f(d, max(0.0, float(radius)) * k)
+    gy, gx = np.gradient(d)
+    gx, gy = gx * k, gy * k
+    amp = float(np.percentile(np.hypot(gx, gy), 90)) or 1.0
+    gain = max(0.0, float(strength)) / max(amp, 1e-6)
+    return gx * gain, gy * gain
+
+
 def apply_relief(depth, radius=6.0, strength=1.5):
     """Рельеф 3D: освещение по нормалям карты глубины (свет сверху-слева).
 
     depth — float-массив 0..1 (1.0 = близко к камере) или PIL-картинка.
     radius — предварительное сглаживание карты, strength — сила рельефа.
     """
-    if isinstance(depth, Image.Image):
-        d = np.asarray(depth.convert("L"), dtype=np.float32) / 255.0
-    else:
-        d = np.asarray(depth, dtype=np.float32)
-        if d.ndim == 3:
-            d = d[..., 0]
-        d = np.clip(d, 0.0, 1.0)
-    h, w = d.shape
-    # и сглаживание, и наклон считаем «на 1000 px»: рельеф одинаково выглядит
-    # на выходе 300 px и 3000 px
-    k = max(1.0, max(h, w) / 1000.0)
-    d = _blur_f(d, max(0.0, float(radius)) * k)
-    gy, gx = np.gradient(d)
-    gx, gy = gx * k, gy * k
-    # авто-масштаб по 90-му процентилю: иначе края выжигаются в чёрно-белое,
-    # а середина (лицо, склон) остаётся плоской серой заливкой
-    amp = float(np.percentile(np.hypot(gx, gy), 90)) or 1.0
-    gain = max(0.0, float(strength)) / max(amp, 1e-6)
-    nx, ny, nz = -gx * gain, -gy * gain, np.ones_like(d)
+    gx, gy = _slope_field(depth, radius, strength)
+    nx, ny, nz = -gx, -gy, np.ones_like(gx)
     ln = np.sqrt(nx * nx + ny * ny + nz * nz)
     lx, ly, lz = -0.55, -0.55, 0.45
     ll = math.sqrt(lx * lx + ly * ly + lz * lz)
     shade = np.clip((nx * lx + ny * ly + nz * lz) / (ln * ll), 0.0, 1.0)
     return Image.fromarray((shade * 255).astype(np.uint8))
+
+
+def normal_map(depth, radius=6.0, strength=2.5):
+    """Карта нормалей (tangent space, RGB 0..1) из карты глубины."""
+    gx, gy = _slope_field(depth, radius, strength)
+    nx, ny, nz = -gx, -gy, np.ones_like(gx)
+    ln = np.sqrt(nx * nx + ny * ny + nz * nz)
+    return np.stack([nx / ln, ny / ln, nz / ln], axis=-1).astype(np.float32) * 0.5 + 0.5
 
 
 def _points_field(dfloat, img_rgb, fov_y=90.0, scale=1.0):
@@ -655,7 +690,7 @@ def _infer_depth(model_path, img, nw, nh, metric=False):
             if av is not None and av < floor:
                 proc.kill()
                 raise MemoryError("Обработка остановлена: свободная ОЗУ закончилась.\n"
-                                  "Уменьшите «Множитель» или включите «Эконом ОЗУ».")
+                                  "Уменьшите «Множитель входа» или «Сжать оригинал до».")
         if proc.returncode != 0:
             raise RuntimeError(f"Ошибка вычисления глубины (код {proc.returncode}).")
         d = np.load(tmp_out).astype(np.float32)
@@ -866,26 +901,19 @@ class DepthUI(tk.Tk):
         slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}", 2, 1)
         slider("Рельеф 3D", "relief_strength", 0.2, 4.0, lambda v: f"{v:.1f}", 3, 0, 2)
 
-        # --- разрешение входа ---
+        # --- разрешение входа: один множитель, вход = 200 px × множитель ---
         row = ttk.Frame(self)
         row.pack(fill="x")
-        ttk.Label(row, text="Множитель:", width=15).pack(side="left", **pad)
-        self.vars["input_mult"] = tk.DoubleVar(value=float(cfg.get("input_mult", 2)))
-        self._input_scale = ttk.Scale(row, from_=1, to=5, variable=self.vars["input_mult"],
-                                      orient="horizontal", command=lambda _v: self._update_input_range())
+        ttk.Label(row, text="Множитель входа:", width=17).pack(side="left", **pad)
+        self.vars["input_mult"] = tk.DoubleVar(value=float(cfg.get("input_mult", 6)))
+        self._input_scale = ttk.Scale(row, from_=1, to=10, variable=self.vars["input_mult"],
+                                      orient="horizontal", command=lambda _v: self._update_input_hint())
         self._input_scale.pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        self._input_lbl = ttk.Label(row, text=f"{self.vars['input_mult'].get():.0f}", width=8)
+        self._input_lbl = ttk.Label(row, text="", width=16)
         self._input_lbl.pack(side="left", padx=10)
-        self.vars["compress"] = tk.BooleanVar(value=bool(cfg.get("compress", False)))
-
-        # --- эконом ОЗУ: под множителем ---
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        ttk.Checkbutton(row, text="Эконом ОЗУ", variable=self.vars["compress"],
-                        command=self._update_input_range).pack(side="left", padx=25, pady=2)
         self._ram_hint = ttk.Label(self, text="", foreground="#e06666")
         self._ram_hint.pack(fill="x", padx=25, pady=(0, 2))
-        self._update_input_range()
+        self._update_input_hint()
 
         # --- сжать оригинал: делитель 1x-4x ---
         row = ttk.Frame(self)
@@ -913,17 +941,18 @@ class DepthUI(tk.Tk):
         ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
         self.vars["depth32"] = tk.BooleanVar(value=bool(cfg.get("depth32", False)))
         ttk.Checkbutton(row, text="32-бит float (TIFF)", variable=self.vars["depth32"]).pack(side="left", padx=10, pady=4)
-        self.vars["depth_exr"] = tk.BooleanVar(value=True)
-        ttk.Checkbutton(row, text="Бело-чёрная глубина (EXR, всегда)",
+        self.vars["depth_exr"] = tk.BooleanVar(value=bool(cfg.get("depth_exr", False)))
+        ttk.Checkbutton(row, text="Бело-чёрная глубина (EXR)",
                         variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
         self.vars["cmap_exr"] = tk.BooleanVar(value=bool(cfg.get("cmap_exr", False)))
         ttk.Checkbutton(row, text="Цветная карта глубины (EXR)",
                         variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
         row = ttk.Frame(self)
         row.pack(fill="x")
-        self.vars["normal_png"] = tk.BooleanVar(value=bool(cfg.get("normal_png", False)))
+        self.vars["normal_exr"] = tk.BooleanVar(
+            value=bool(cfg.get("normal_exr", cfg.get("normal_png", False))))
         ttk.Checkbutton(row, text="Карта нормалей (EXR)",
-                        variable=self.vars["normal_png"]).pack(side="left", padx=10, pady=4)
+                        variable=self.vars["normal_exr"]).pack(side="left", padx=10, pady=4)
         self.vars["ply_out"] = tk.BooleanVar(value=bool(cfg.get("ply_out", False)))
         ttk.Checkbutton(row, text="XYZ-облако (PLY)",
                         variable=self.vars["ply_out"]).pack(side="left", padx=10, pady=4)
@@ -1257,21 +1286,23 @@ class DepthUI(tk.Tk):
         win.destroy()
         self.lbl_status.configure(text=f"Фото выбрано: {path.split('/')[-1]}")
 
-    def _update_input_range(self):
-        top = 10 if self.vars["compress"].get() else 5
-        self._input_scale.configure(to=top)
-        if float(self.vars["input_mult"].get()) > top:
-            self.vars["input_mult"].set(float(top))
-        self._input_lbl.configure(text=f"{self.vars['input_mult'].get():.0f}")
-        v = int(round(float(self.vars["input_mult"].get())))
-        if self.vars["compress"].get():
-            self._ram_hint.configure(text="")
-        elif v >= 5:
-            self._ram_hint.configure(text="Осторожно: 5x может съесть более 32 ГБ ОЗУ")
+    def _update_input_hint(self):
+        v = max(1, min(10, int(round(float(self.vars["input_mult"].get())))))
+        px = 200 * v
+        self._input_lbl.configure(text=f"{v}x → {px} px")
+        # цвет подсказки: обычный режим — серый, большой вход — предупреждение
+        if v >= 8:
+            self._ram_hint.configure(text=f"Осторожно: вход {px} px по длинной стороне — это много ОЗУ",
+                                     foreground="#e06666")
+        elif v >= 6:
+            self._ram_hint.configure(text=f"Вход {px} px — обычный режим для фото 1000–2000 px",
+                                     foreground="#7a7a7a")
         elif v >= 3:
-            self._ram_hint.configure(text="Осторожно: большой множитель сильно увеличивает расход ОЗУ")
+            self._ram_hint.configure(text=f"Вход {px} px — быстрый черновой режим",
+                                     foreground="#7a7a7a")
         else:
-            self._ram_hint.configure(text="")
+            self._ram_hint.configure(text=f"Вход {px} px — очень грубо, только чтобы прикинуть",
+                                     foreground="#7a7a7a")
 
     def collect(self):
         c = dict(cfg)
@@ -1293,16 +1324,13 @@ class DepthUI(tk.Tk):
         if div > 1:
             src_img = src_img.resize((max(1, src_img.width // div), max(1, src_img.height // div)), Image.LANCZOS)
         orig_w, orig_h = src_img.width, src_img.height
-        if self.vars["compress"].get():
-            scale = (200 * mult) / max(src_img.width, src_img.height)
-            c["in_w"] = max(14, int(src_img.width * scale))
-            c["in_h"] = max(14, int(src_img.height * scale))
-        else:
-            c["in_w"] = max(256, mult * src_img.width)
-            c["in_h"] = max(256, mult * src_img.height)
+        # вход модели: 200 px × множитель по длинной стороне (бывший «Эконом ОЗУ»);
+        # выше 4x от оригинала не растягиваем — деталей это не добавит, только ОЗУ
+        scale = min((200.0 * mult) / max(1, max(src_img.width, src_img.height)), 4.0)
+        c["in_w"] = max(14, int(src_img.width * scale))
+        c["in_h"] = max(14, int(src_img.height * scale))
         out_mult = int(self.vars["out_mult"].get().replace("x", ""))
         c["out_size"] = f"{out_mult * orig_w}x{out_mult * orig_h}"
-        c["compress"] = bool(self.vars["compress"].get())
         for k, var in self.vars.items():
             if isinstance(var, tk.DoubleVar):
                 c[k] = float(var.get())
@@ -1312,7 +1340,7 @@ class DepthUI(tk.Tk):
         c["depth32"] = bool(self.vars["depth32"].get())
         c["depth_exr"] = bool(self.vars["depth_exr"].get())
         c["cmap_exr"] = bool(self.vars["cmap_exr"].get())
-        c["normal_png"] = bool(self.vars["normal_png"].get())
+        c["normal_exr"] = bool(self.vars["normal_exr"].get())
         c["ply_out"] = bool(self.vars["ply_out"].get())
         c["glb_out"] = bool(self.vars["glb_out"].get())
         c["gen"] = "none"
@@ -1523,7 +1551,9 @@ class DepthUI(tk.Tk):
                 depth_out = depth_out.filter(ImageFilter.GaussianBlur(smooth))
                 dfloat = _blur_f(dfloat, smooth)
 
-            write_exr(f"{OUT}/photo_depth.exr", np.clip(dfloat, 0.0, 1.0).astype(np.float32))
+            if c.get("depth_exr"):
+                # бело-чёрная глубина 0..1 без гаммы — то, что читают ноды в Blender
+                write_exr(f"{OUT}/photo_depth.exr", np.clip(dfloat, 0.0, 1.0).astype(np.float32))
             # исходное фото всегда сохраняем в EXR (float linear RGB) — для цвета меша
             write_exr(f"{OUT}/photo_src.exr",
                       _srgb_to_linear(np.asarray(img_out, dtype=np.float32) / 255.0))
@@ -1580,15 +1610,12 @@ class DepthUI(tk.Tk):
                     np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
 
-            if c.get("normal_png"):
-                # карта нормалей из карты глубины: цвет как у matcap
-                # check_normal+y (X=R, Y=G, Z=B, плоскость лицом к камере = +Z=синий)
-                d = np.clip(dfloat, 0.0, 1.0).astype(np.float32)
-                gy, gx = np.gradient(d)
-                n = np.stack([-gx, -gy, np.ones_like(d)], axis=-1).astype(np.float32)
-                ln = np.linalg.norm(n, axis=-1, keepdims=True)
-                n = n / np.maximum(ln, 1e-6)
-                write_exr(f"{OUT}/photo_normal.exr", n * 0.5 + 0.5)
+            if c.get("normal_exr"):
+                # нормали в tangent space: X=R, Y=G, Z=B (плоскость лицом к камере = +Z=синий);
+                # наклоны нормируются так же, как в рельефе, иначе карта выходит ровно-сиреневой
+                write_exr(f"{OUT}/photo_normal.exr",
+                          normal_map(dfloat, float(c.get("relief_radius", 6.0)),
+                                     float(c.get("relief_strength", 1.5))))
 
             # исходное цветное фото в EXR (float linear) — для качества в меше
             _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
@@ -1607,24 +1634,31 @@ class DepthUI(tk.Tk):
 
             if c.get("render2") and os.path.realpath(str(c["src"])) != os.path.realpath(f"{OUT}/photo_colormap.exr"):
                 # первый рендер не пропадает: сохраняем его отдельно
+                prev_exr = f"{OUT}/photo_colormap_1.exr"
                 try:
-                    write_exr(f"{OUT}/photo_colormap_1.exr", np.concatenate([
+                    write_exr(prev_exr, np.concatenate([
                         _srgb_to_linear(crgb).astype(np.float32),
                         np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1))
                     Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap_1.png")
                     Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 255).astype(np.uint8)).convert("RGB").save(
                         f"{OUT}/photo_depth_1.png")
-                except Exception:
-                    pass
-                # второй проход: свежая цветная карта сама становится источником;
-                # результат гибридизируется с первым (50/50)
+                except Exception as e:
+                    print("render1 save error:", e)
+                if not os.path.exists(prev_exr):
+                    # без этой карты второй проход не стартует, поэтому пишем повторно
+                    write_exr(prev_exr, np.concatenate([
+                        _srgb_to_linear(crgb).astype(np.float32),
+                        np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1))
+                # второй проход: карта первого рендера сама становится источником;
+                # результат гибридизируется с первым (50/50).
+                # отдельный файл, чтобы «Гибрид» не требовал галочку «Цветная карта (EXR)»
                 self._hybrid_prev = {
                     "a": np.clip(dfloat, 0.0, 1.0).astype(np.float32),
                     "rgb": np.clip(crgb, 0.0, 1.0).astype(np.float32),
                     "size": (w, h),
                 }
                 c2 = dict(c)
-                c2["src"] = f"{OUT}/photo_colormap.exr"
+                c2["src"] = prev_exr
                 c2["render2"] = False
                 c2["hybrid"] = True
                 try:
