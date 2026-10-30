@@ -1430,7 +1430,7 @@ class DepthUI(tk.Tk):
         self.btn_run.pack(fill="x")
 
         # --- предпросмотр ---
-        self.TYPE_NAMES = ["Глубина", "Цветная карта", "Нормаль", "Цветное фото"]
+        self.TYPE_NAMES = ["Глубина", "Цветная карта EXR", "Нормали EXR", "Цветное фото"]
         self.type_idx = 0
 
         top = ttk.Frame(view, style="Card.TFrame")
@@ -1442,7 +1442,7 @@ class DepthUI(tk.Tk):
         bar = ttk.Frame(view, style="Card.TFrame")
         bar.pack(fill="x", pady=(9, 9))
         self.var_show_prev = tk.BooleanVar(value=False)
-        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(side="left", padx=(0, 10))
+        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(side="left", padx=(0, 8))
         self.var_show_prev.trace_add("write", lambda *_: self.show_preview())
         seg = ttk.Frame(bar, style="Card.TFrame")
         seg.pack(side="left")
@@ -1450,7 +1450,7 @@ class DepthUI(tk.Tk):
         for i, name in enumerate(self.TYPE_NAMES):
             b = ttk.Button(seg, text=name, style="Seg.TButton",
                            command=lambda i=i: self.set_type(i))
-            b.pack(side="left", padx=(0, 4))
+            b.pack(side="left", padx=(0, 3))
             self._seg_btns.append(b)
         holder = tk.Frame(view, bg=BORDER)
         holder.pack(fill="both", expand=True)
@@ -1547,13 +1547,13 @@ class DepthUI(tk.Tk):
                foreground=[("disabled", "#8f9bb0")])
 
         st.configure("Seg.TButton", background=CARD2, foreground=MUTED, bordercolor=CARD2,
-                     lightcolor=CARD2, darkcolor=CARD2, focuscolor=CARD2, padding=(8, 5))
+                     lightcolor=CARD2, darkcolor=CARD2, focuscolor=CARD2, padding=(6, 5))
         st.map("Seg.TButton", background=[("active", "#333a46")],
                foreground=[("active", FG)])
 
         st.configure("SegOn.TButton", background=ACCENT, foreground="#ffffff",
                      bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
-                     focuscolor=ACCENT, padding=(10, 5))
+                     focuscolor=ACCENT, padding=(6, 5))
         st.map("SegOn.TButton", background=[("active", "#6aa1ff")],
                foreground=[("active", "#ffffff")])
 
@@ -1603,7 +1603,7 @@ class DepthUI(tk.Tk):
             b.pack_forget()
         for i, b in enumerate(self._seg_btns):
             if vis[i]:
-                b.pack(side="left", padx=(0, 4))
+                b.pack(side="left", padx=(0, 3))
         self._set_seg_styles()
         self.show_preview()
 
