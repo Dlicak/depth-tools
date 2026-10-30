@@ -19,14 +19,21 @@ SRC = common.default_src()
 # ползунком «FOV PLY»; оставили одно разумное значение — как у обычной камеры.
 DEFAULT_FOV_Y = 60.0
 
+# Палитра интерфейса
+BG = "#15171c"
+CARD = "#1e2229"
+CARD2 = "#262b34"
+FG = "#e9ecf1"
+MUTED = "#98a0ad"
+ACCENT = "#4c8dff"
+BORDER = "#2c323c"
+
 DEFAULTS = {
     "model": "small",
     "depth_gamma": 1.0,
     "depth_lo": 0.0,
     "depth_hi": 100.0,
     "depth_contrast": 1.0,
-    "relief_radius": 6.0,
-    "relief_strength": 1.5,
     "out_size": "300x300",
     "invert": False,
     "render2": False,
@@ -75,7 +82,8 @@ if "normal_exr" not in _raw and "normal_png" in _raw:
 # Убранные из интерфейса ключи: иначе они тянутся из старого settings.json
 for _stale in ("ply_fov", "ply_scale", "compress", "overlay_alpha", "focus_enable",
                "focus_x", "focus_y", "focus_radius", "dof_strength", "normal_png",
-               "gen", "gen_amp", "gen_freq", "fx_strength"):
+               "gen", "gen_amp", "gen_freq", "fx_strength",
+               "relief_radius", "relief_strength"):
     cfg.pop(_stale, None)
 
 STATE = {"busy": False}
@@ -365,21 +373,6 @@ def _slope_field(depth, radius=6.0, strength=1.5):
     amp = float(np.percentile(np.hypot(gx, gy), 90)) or 1.0
     gain = max(0.0, float(strength)) / max(amp, 1e-6)
     return gx * gain, gy * gain
-
-
-def apply_relief(depth, radius=6.0, strength=1.5):
-    """Рельеф 3D: освещение по нормалям карты глубины (свет сверху-слева).
-
-    depth — float-массив 0..1 (1.0 = близко к камере) или PIL-картинка.
-    radius — предварительное сглаживание карты, strength — сила рельефа.
-    """
-    gx, gy = _slope_field(depth, radius, strength)
-    nx, ny, nz = -gx, -gy, np.ones_like(gx)
-    ln = np.sqrt(nx * nx + ny * ny + nz * nz)
-    lx, ly, lz = -0.55, -0.55, 0.45
-    ll = math.sqrt(lx * lx + ly * ly + lz * lz)
-    shade = np.clip((nx * lx + ny * ly + nz * lz) / (ln * ll), 0.0, 1.0)
-    return Image.fromarray((shade * 255).astype(np.uint8))
 
 
 def normal_map(depth, radius=6.0, strength=2.5):
@@ -856,37 +849,207 @@ def _blur_f(a, r):
     return out
 
 
+class NiceSlider(tk.Canvas):
+    """Ползунок на Canvas: ровный желоб, заливка до бегунка и круглая ручка.
+
+    Штатный ttk.Scale в теме clam рисует тонкую полоску с квадратиком, который
+    на тёмном фоне почти не видно, поэтому рисуем сами.
+    """
+
+    H = 26
+    PAD = 10      # отступ ручки от краёв, чтобы она не вылезала за виджет
+    KNOB = 6      # радиус ручки
+
+    def __init__(self, master, variable, from_=0.0, to=100.0, command=None, **kw):
+        super().__init__(master, height=self.H, bg=CARD, highlightthickness=0, bd=0, **kw)
+        self.var = variable
+        self.lo = float(from_)
+        self.hi = float(to)
+        self.cmd = command
+        self._drag = False
+        self.bind("<Configure>", lambda _e: self._draw())
+        self.bind("<Button-1>", self._press)
+        self.bind("<B1-Motion>", self._move)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Enter>", lambda _e: self.configure(cursor="hand2"))
+        self.bind("<Leave>", lambda _e: self.configure(cursor=""))
+        self.var.trace_add("write", lambda *_: self._draw())
+
+    def _geom(self):
+        w = max(1, self.winfo_width())
+        span = (self.hi - self.lo) or 1.0
+        t = (float(self.var.get()) - self.lo) / span
+        t = min(1.0, max(0.0, t))
+        x0 = float(self.PAD)
+        x1 = max(x0 + 1.0, w - self.PAD)
+        return x0, x1, x0 + (x1 - x0) * t
+
+    def _draw(self):
+        self.delete("all")
+        x0, x1, x = self._geom()
+        cy = self.H / 2.0
+        self.create_rectangle(x0, cy - 2, x1, cy + 2, fill=CARD2, outline="")
+        if x > x0:
+            self.create_rectangle(x0, cy - 2, x, cy + 2, fill=ACCENT, outline="")
+        self.create_oval(x - self.KNOB, cy - self.KNOB, x + self.KNOB, cy + self.KNOB,
+                         fill="#ffffff", outline=ACCENT, width=2)
+
+    def _set_from_x(self, px):
+        x0, x1, _ = self._geom()
+        t = (float(px) - x0) / max(1.0, x1 - x0)
+        t = min(1.0, max(0.0, t))
+        self.var.set(round(self.lo + (self.hi - self.lo) * t, 4))
+        if self.cmd:
+            self.cmd(self.var.get())
+
+    def _press(self, e):
+        self._drag = True
+        self._set_from_x(e.x)
+
+    def _move(self, e):
+        if self._drag:
+            self._set_from_x(e.x)
+
+    def _release(self, _e):
+        self._drag = False
+
+
+class NiceCheck(tk.Canvas):
+    """Флажок с квадратиком и подписью: в теме clam флажки рисуются светлыми
+    квадратами, которые на тёмном фоне выглядят как дырки, поэтому рисуем сами."""
+
+    SIZE = 16
+    GAP = 8
+    H = 22
+
+    def __init__(self, master, text, variable, bg=CARD, fg=FG, **kw):
+        import tkinter.font as tkfont
+        f = tkfont.nametofont("TkDefaultFont")
+        super().__init__(master, width=self.SIZE + self.GAP + f.measure(text) + 4,
+                         height=self.H, bg=bg, highlightthickness=0, bd=0,
+                         cursor="hand2", **kw)
+        self.var = variable
+        self.text = text
+        self._fg = fg
+        self._hover = False
+        self.bind("<Button-1>", lambda _e: self.var.set(not self.var.get()))
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.var.trace_add("write", lambda *_: self._draw())
+        self._draw()
+
+    def _on_enter(self, _e):
+        self._hover = True
+        self._draw()
+
+    def _on_leave(self, _e):
+        self._hover = False
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        s = self.SIZE
+        y0 = (self.H - s) / 2.0
+        on = bool(self.var.get())
+        if on:
+            fill, outline = ACCENT, ACCENT
+        else:
+            fill = "#2f3540" if self._hover else CARD2
+            outline = ACCENT if self._hover else BORDER
+        self.create_rectangle(0.5, y0 + 0.5, s - 0.5, y0 + s - 0.5,
+                              fill=fill, outline=outline, width=1)
+        if on:
+            self.create_line(4, y0 + 8, 7, y0 + 11, 12, y0 + 5, fill="#ffffff",
+                             width=2, capstyle="round", joinstyle="round")
+        self.create_text(s + self.GAP, self.H / 2.0, text=self.text, anchor="w",
+                         fill=self._fg, font="TkDefaultFont")
+
+
 class DepthUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Карта глубины — настройки")
-        # окно сразу достаточно широкое/высокое: ряд галочек не обрезается,
-        # а предпросмотру достаётся заметная часть высоты
-        # Окно подстраивается под экран: на ноутбуке 1366×768 низ не уезжает за край
+        self.title("Карта глубины")
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry("%dx%d" % (max(980, min(1280, sw - 80)), max(700, min(980, sh - 90))))
-        self.minsize(980, 700)
-        self.configure(bg="#1e1e1e")
+        self.geometry("%dx%d" % (max(1120, min(1360, sw - 80)),
+                                 max(700, min(900, sh - 90))))
+        self.minsize(1120, 700)
+        self.configure(bg=BG)
+        self._init_style()
 
         self.vars = {}
 
-        pad = dict(padx=10, pady=4, anchor="w")
+        outer = ttk.Frame(self, style="Root.TFrame", padding=(16, 14, 16, 12))
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+
+        # --- шапка ---
+        head = ttk.Frame(outer, style="Root.TFrame")
+        head.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        ttk.Label(head, text="Карта глубины", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="фото → глубина → PNG · TIFF · EXR · PLY · GLB",
+                  style="Muted.TLabel").pack(side="left", padx=(12, 0), pady=(7, 0))
+
+        body = ttk.Frame(outer, style="Root.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=0, minsize=440)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        # Левая колонка прокручивается: на ноутбуке с низким экраном настройки
+        # не обрезаются, а «Результаты» остаются доступными
+        side_wrap = ttk.Frame(body, style="Root.TFrame")
+        side_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        side_canvas = tk.Canvas(side_wrap, bg=CARD, highlightthickness=0, bd=0)
+        side_bar = ttk.Scrollbar(side_wrap, orient="vertical", command=side_canvas.yview,
+                                 style="Card.Vertical.TScrollbar")
+        side_canvas.configure(yscrollcommand=side_bar.set)
+        side_canvas.pack(side="left", fill="both", expand=True)
+        side = ttk.Frame(side_canvas, style="Card.TFrame", padding=(16, 14))
+        _side_id = side_canvas.create_window((0, 0), window=side, anchor="nw")
+
+        def _side_scroll(_e=None):
+            side_canvas.configure(scrollregion=side_canvas.bbox("all"))
+            need = side.winfo_reqheight() > side_canvas.winfo_height() + 1
+            if need and not side_bar.winfo_ismapped():
+                side_bar.pack(side="right", fill="y")
+            elif not need and side_bar.winfo_ismapped():
+                side_bar.pack_forget()
+
+        side.bind("<Configure>", _side_scroll)
+        side_canvas.bind("<Configure>", lambda e: (side_canvas.itemconfigure(_side_id, width=e.width),
+                                                   _side_scroll()))
+
+        def _wheel(e):
+            step = -1 if (getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0) else 1
+            side_canvas.yview_scroll(step, "units")
+
+        def _bind_wheel(w):
+            for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+                w.bind(seq, _wheel)
+            for child in w.winfo_children():
+                _bind_wheel(child)
+
+        view = ttk.Frame(body, style="Card.TFrame", padding=(12, 10))
+        view.grid(row=0, column=1, sticky="nsew")
+
+        def section(text, first=False):
+            ttk.Label(side, text=text, style="Section.TLabel").pack(
+                anchor="w", pady=(0 if first else 16, 7))
 
         # --- фото ---
-        row = ttk.Frame(self)
+        section("ФОТО", first=True)
+        row = ttk.Frame(side, style="Card.TFrame")
         row.pack(fill="x")
-        ttk.Label(row, text="Фото:").pack(side="left", **pad)
         self.var_src = tk.StringVar(value=SRC)
-        ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        ttk.Button(row, text="Поиск фото", command=self.pick_src).pack(side="left", padx=10, pady=4)
+        ttk.Entry(row, textvariable=self.var_src).pack(side="left", fill="x", expand=True)
+        ttk.Button(row, text="Выбрать", command=self.pick_src).pack(side="left", padx=(8, 0))
 
         # --- модель ---
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        ttk.Label(row, text="Модель:", width=15).pack(side="left", **pad)
+        section("МОДЕЛЬ")
         _m = str(cfg.get("model", "small")).lower()
         if _m not in ("small", "base", "large", "midas", "zoe",
-                  "base_in", "base_out", "large_in", "large_out", "large_mix"):
+                      "base_in", "base_out", "large_in", "large_out", "large_mix"):
             _m = "small"
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
@@ -895,143 +1058,228 @@ class DepthUI(tk.Tk):
                   # мог его сохранить — иначе KeyError при запуске
                   "large_mix": "Large"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
-        ttk.Combobox(row, textvariable=self.vars["model"], values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
-                            "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
-                     width=12, state="readonly").pack(side="left", padx=10, pady=4)
-        ttk.Label(row, text="(Base/Large — детальнее, но медленнее)", foreground="#888").pack(side="left")
+        ttk.Combobox(side, textvariable=self.vars["model"],
+                     values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
+                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
+                     state="readonly").pack(fill="x")
+        ttk.Label(side, text="Base и Large детальнее, но медленнее",
+                  style="Hint.TLabel").pack(anchor="w", pady=(5, 0))
 
-        # --- slider helpers: 2 колонки (левая/правая) ---
-        slider_grid = ttk.Frame(self)
-        slider_grid.pack(fill="x", padx=5)
-        slider_grid.columnconfigure(0, weight=1)
-        slider_grid.columnconfigure(1, weight=1)
+        # --- глубина ---
+        section("ГЛУБИНА")
 
-        def slider(label, key, lo, hi, fmt, r, c, span=1):
-            cell = ttk.Frame(slider_grid)
-            cell.grid(row=r, column=c, columnspan=span, sticky="ew", padx=4, pady=3)
-            ttk.Label(cell, text=label, width=15).pack(side="left")
+        def slider(label, key, lo, hi, fmt):
+            row = ttk.Frame(side, style="Card.TFrame")
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=label, style="Card.TLabel", width=16,
+                      anchor="w").pack(side="left")
             var = tk.DoubleVar(value=float(cfg[key]))
-            s = ttk.Scale(cell, from_=lo, to=hi, variable=var, orient="horizontal",
-                          command=lambda _v: lbl.configure(text=fmt(var.get())))
-            s.pack(side="left", fill="x", expand=True, padx=6)
-            lbl = ttk.Label(cell, text=fmt(var.get()), width=7)
-            lbl.pack(side="left")
+            val = ttk.Label(row, text=fmt(var.get()), style="Card.TLabel", width=6, anchor="e")
+            val.pack(side="right")
+            NiceSlider(row, var, lo, hi,
+                       command=lambda _v: val.configure(text=fmt(var.get()))).pack(
+                side="left", fill="x", expand=True, padx=(10, 8))
             self.vars[key] = var
 
-        slider("Глубина от %", "depth_lo", 0, 90, lambda v: f"{v:.0f}", 0, 0)
-        slider("Глубина до %", "depth_hi", 10, 100, lambda v: f"{v:.0f}", 0, 1)
-        slider("Гамма глубины", "depth_gamma", 0.2, 5.0, lambda v: f"{v:.2f}", 1, 0)
-        slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 1, 1)
-        slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 2, 0)
-        slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}", 2, 1)
-        slider("Рельеф 3D", "relief_strength", 0.2, 4.0, lambda v: f"{v:.1f}", 3, 0, 2)
+        slider("Глубина от %", "depth_lo", 0, 90, lambda v: f"{v:.0f}")
+        slider("Глубина до %", "depth_hi", 10, 100, lambda v: f"{v:.0f}")
+        slider("Гамма", "depth_gamma", 0.2, 5.0, lambda v: f"{v:.2f}")
+        slider("Контраст", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}")
+        slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}")
+        slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}")
 
-        # --- разрешение входа: один множитель, вход = 200 px × множитель ---
-        row = ttk.Frame(self)
+        # --- разрешение ---
+        section("РАЗРЕШЕНИЕ")
+        row = ttk.Frame(side, style="Card.TFrame")
         row.pack(fill="x")
-        ttk.Label(row, text="Множитель входа:", width=17).pack(side="left", **pad)
+        ttk.Label(row, text="Множитель входа", style="Card.TLabel", width=16,
+                  anchor="w").pack(side="left")
         self.vars["input_mult"] = tk.DoubleVar(value=float(cfg.get("input_mult", 6)))
-        self._input_scale = ttk.Scale(row, from_=1, to=10, variable=self.vars["input_mult"],
-                                      orient="horizontal", command=lambda _v: self._update_input_hint())
-        self._input_scale.pack(side="left", fill="x", expand=True, padx=10, pady=4)
-        self._input_lbl = ttk.Label(row, text="", width=16)
-        self._input_lbl.pack(side="left", padx=10)
-        self._ram_hint = ttk.Label(self, text="", foreground="#e06666")
-        self._ram_hint.pack(fill="x", padx=25, pady=(0, 2))
+        self._input_lbl = ttk.Label(row, text="", style="Card.TLabel", width=4, anchor="e")
+        self._input_lbl.pack(side="right")
+        self._input_scale = NiceSlider(row, self.vars["input_mult"], 1, 10,
+                                       command=lambda _v: self._update_input_hint())
+        self._input_scale.pack(side="left", fill="x", expand=True, padx=(10, 8))
+        self._ram_hint = ttk.Label(side, text="", style="Hint.TLabel")
+        self._ram_hint.pack(anchor="w", pady=(5, 0))
         self._update_input_hint()
 
-        # --- сжать оригинал: делитель 1x-4x ---
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        ttk.Label(row, text="Сжать оригинал до:").pack(side="left", **pad)
+        row = ttk.Frame(side, style="Card.TFrame")
+        row.pack(fill="x", pady=(10, 0))
+        ttk.Label(row, text="Сжать оригинал", style="Card.TLabel").pack(side="left")
         _sd = str(cfg.get("src_div", "1x"))
         if _sd not in ("1x", "2x", "3x", "4x"):
             _sd = "1x"
         self.vars["src_max"] = tk.StringVar(value=_sd)
-        ttk.Combobox(row, textvariable=self.vars["src_max"],
-                     values=["1x", "2x", "3x", "4x"],
-                     width=10, state="readonly").pack(side="left", padx=10, pady=4)
-
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        self.vars["invert"] = tk.BooleanVar(value=bool(cfg.get("invert", False)))
-        ttk.Checkbutton(row, text="Инверсия", variable=self.vars["invert"]).pack(side="left", padx=10, pady=4)
-        self.vars["render2"] = tk.BooleanVar(value=bool(cfg.get("render2", False)))
-        ttk.Checkbutton(row, text="Гибрид",
-                        variable=self.vars["render2"]).pack(side="left", padx=10, pady=4)
-
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        self.vars["depth16"] = tk.BooleanVar(value=bool(cfg.get("depth16", False)))
-        ttk.Checkbutton(row, text="16-бит глубина (PNG)", variable=self.vars["depth16"]).pack(side="left", padx=10, pady=4)
-        self.vars["depth32"] = tk.BooleanVar(value=bool(cfg.get("depth32", False)))
-        ttk.Checkbutton(row, text="32-бит float (TIFF)", variable=self.vars["depth32"]).pack(side="left", padx=10, pady=4)
-        self.vars["depth_exr"] = tk.BooleanVar(value=bool(cfg.get("depth_exr", False)))
-        ttk.Checkbutton(row, text="Бело-чёрная глубина (EXR)",
-                        variable=self.vars["depth_exr"]).pack(side="left", padx=10, pady=4)
-        self.vars["cmap_exr"] = tk.BooleanVar(value=bool(cfg.get("cmap_exr", False)))
-        ttk.Checkbutton(row, text="Цветная карта глубины (EXR)",
-                        variable=self.vars["cmap_exr"]).pack(side="left", padx=10, pady=4)
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        self.vars["normal_exr"] = tk.BooleanVar(value=bool(cfg.get("normal_exr", False)))
-        ttk.Checkbutton(row, text="Карта нормалей (EXR)",
-                        variable=self.vars["normal_exr"]).pack(side="left", padx=10, pady=4)
-        self.vars["ply_out"] = tk.BooleanVar(value=bool(cfg.get("ply_out", False)))
-        ttk.Checkbutton(row, text="XYZ-облако (PLY)",
-                        variable=self.vars["ply_out"]).pack(side="left", padx=10, pady=4)
-        self.vars["glb_out"] = tk.BooleanVar(value=bool(cfg.get("glb_out", False)))
-        ttk.Checkbutton(row, text="Модель 3D (GLB)",
-                        variable=self.vars["glb_out"]).pack(side="left", padx=10, pady=4)
-
-        row = ttk.Frame(self)
-        row.pack(fill="x")
-        ttk.Label(row, text="Размер выхода:").pack(side="left", **pad)
+        ttk.Combobox(row, textvariable=self.vars["src_max"], values=["1x", "2x", "3x", "4x"],
+                     width=5, state="readonly").pack(side="left", padx=(8, 18))
+        ttk.Label(row, text="Выход", style="Card.TLabel").pack(side="left")
         self.vars["out_mult"] = tk.StringVar(value=str(cfg.get("out_mult", "1x")))
-        cmb = ttk.Combobox(row, textvariable=self.vars["out_mult"],
-                           values=["1x", "2x", "3x", "4x"], width=8, state="readonly")
-        cmb.pack(side="left", padx=10, pady=4)
+        ttk.Combobox(row, textvariable=self.vars["out_mult"], values=["1x", "2x", "3x", "4x"],
+                     width=5, state="readonly").pack(side="left", padx=(8, 0))
 
-        # --- кнопки ---
-        row = ttk.Frame(self)
-        row.pack(fill="x", pady=8)
-        self.btn_run = ttk.Button(row, text="▶ Применить", command=self.run)
-        self.btn_run.pack(side="left", padx=10)
-        ttk.Button(row, text="Открыть папку", command=self.open_folder).pack(side="left", padx=10)
-        self.lbl_status = ttk.Label(row, text="Готово. Нажми Применить")
-        self.lbl_status.pack(side="left", padx=10)
+        # --- результаты ---
+        section("РЕЗУЛЬТАТЫ")
+        grid = ttk.Frame(side, style="Card.TFrame")
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
 
-        # --- предпросмотр: одно окно + переключение типа/предыдущего ---
-        self.TYPE_NAMES = ["Глубина", "Цветная карта", "Рельеф 3D", "Цветное фото"]
+        def check(text, key, r, c):
+            var = tk.BooleanVar(value=bool(cfg.get(key, False)))
+            NiceCheck(grid, text, var).grid(row=r, column=c, sticky="w", pady=3, padx=(0, 6))
+            self.vars[key] = var
+
+        check("16-бит PNG", "depth16", 0, 0)
+        check("32-бит TIFF", "depth32", 0, 1)
+        check("Глубина EXR", "depth_exr", 1, 0)
+        check("Цветная карта EXR", "cmap_exr", 1, 1)
+        check("Нормали EXR", "normal_exr", 2, 0)
+        check("XYZ-облако PLY", "ply_out", 2, 1)
+        check("Модель GLB", "glb_out", 3, 0)
+        check("Инверсия", "invert", 3, 1)
+        check("Гибрид (2 прохода)", "render2", 4, 0)
+
+        # --- нижняя панель ---
+        foot = ttk.Frame(outer, style="Root.TFrame")
+        foot.grid(row=2, column=0, sticky="ew", pady=(14, 0))
+        self.btn_run = ttk.Button(foot, text="Применить", style="Accent.TButton", command=self.run)
+        self.btn_run.pack(side="left")
+        ttk.Button(foot, text="Открыть папку", command=self.open_folder).pack(side="left", padx=(8, 0))
+        self.lbl_status = ttk.Label(foot, text="Готово. Нажмите «Применить»", style="Muted.TLabel")
+        self.lbl_status.pack(side="left", padx=(14, 0))
+
+        # --- предпросмотр ---
+        self.TYPE_NAMES = ["Глубина", "Цветная карта", "Нормаль", "Цветное фото"]
         self.type_idx = 0
 
-        box = ttk.LabelFrame(self, text="Предпросмотр")
-        box.pack(fill="both", expand=True, padx=10, pady=10)
+        top = ttk.Frame(view, style="Card.TFrame")
+        top.pack(fill="x")
+        ttk.Label(top, text="ПРЕДПРОСМОТР", style="Section.TLabel").pack(side="left")
+        self.lbl_size = ttk.Label(top, text="—", style="Hint.TLabel")
+        self.lbl_size.pack(side="right")
 
-        row = ttk.Frame(box)
-        row.pack(fill="x", pady=(4, 0))
-        self.lbl_type = ttk.Label(row, text="Тип: Глубина", font=("", 11, "bold"))
-        self.lbl_type.pack(side="left", padx=5)
-        ttk.Button(row, text="⇄ Сменить тип", command=self.cycle_type).pack(side="left", padx=5)
+        bar = ttk.Frame(view, style="Card.TFrame")
+        bar.pack(fill="x", pady=(9, 9))
+        seg = ttk.Frame(bar, style="Card.TFrame")
+        seg.pack(side="left")
+        self._seg_btns = []
+        for i, name in enumerate(self.TYPE_NAMES):
+            b = ttk.Button(seg, text=name, style="Seg.TButton",
+                           command=lambda i=i: self.set_type(i))
+            b.pack(side="left", padx=(0, 6))
+            self._seg_btns.append(b)
         self.var_show_prev = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row, text="Предыдущий результат", variable=self.var_show_prev,
-                        command=self.show_preview).pack(side="left", padx=10)
-        self.lbl_size = ttk.Label(row, text="—")
-        self.lbl_size.pack(side="right", padx=6)
+        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(side="right")
+        self.var_show_prev.trace_add("write", lambda *_: self.show_preview())
 
-        self.cur_view = tk.Label(box, bg="#000", text="Обработайте фото", fg="#888")
-        self.cur_view.pack(fill="both", expand=True, padx=4, pady=4)
+        holder = tk.Frame(view, bg=BORDER)
+        holder.pack(fill="both", expand=True)
+        self.cur_view = tk.Label(holder, bg="#0d0f13", fg=MUTED, text="Обработайте фото", bd=0)
+        self.cur_view.pack(fill="both", expand=True, padx=1, pady=1)
 
         self._prev_img = None
         self._cur_img = None
         self._prev_col = None
         self._cur_col = None
-        self._prev_rel = None
-        self._cur_rel = None
+        self._prev_nrm = None
+        self._cur_nrm = None
         self._src_img = None
         self._prev_src = None
 
+        self._set_seg_styles()
+        _bind_wheel(side)
         self.bind("<Configure>", lambda _e: self._schedule_resize())
+
+    # ---------- оформление ----------
+    def _init_style(self):
+        import tkinter.font as tkfont
+        st = ttk.Style(self)
+        try:
+            st.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        base = tkfont.nametofont("TkDefaultFont")
+        base.configure(size=10)
+        self._f_title = base.copy()
+        self._f_title.configure(size=17, weight="bold")
+        self._f_section = base.copy()
+        self._f_section.configure(size=8, weight="bold")
+        self._f_hint = base.copy()
+        self._f_hint.configure(size=9)
+        self._f_btn = base.copy()
+        self._f_btn.configure(weight="bold")
+
+        st.configure(".", background=BG, foreground=FG)
+        st.configure("Root.TFrame", background=BG)
+        st.configure("Card.TFrame", background=CARD)
+        st.configure("TLabel", background=BG, foreground=FG)
+        st.configure("Card.TLabel", background=CARD, foreground=FG)
+        st.configure("Muted.TLabel", background=BG, foreground=MUTED)
+        st.configure("Hint.TLabel", background=CARD, foreground=MUTED, font=self._f_hint)
+        st.configure("Warn.TLabel", background=CARD, foreground="#ffa06b", font=self._f_hint)
+        st.configure("Title.TLabel", background=BG, foreground="#ffffff", font=self._f_title)
+        st.configure("Section.TLabel", background=CARD, foreground="#7f8794",
+                     font=self._f_section)
+
+        st.configure("TButton", background=CARD2, foreground=FG, bordercolor=BORDER,
+                     lightcolor=CARD2, darkcolor=CARD2, focuscolor=CARD2, padding=(12, 6))
+        st.map("TButton", background=[("active", "#333a46"), ("pressed", "#333a46")],
+               foreground=[("disabled", "#6b7280")])
+
+        st.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
+                     bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                     focuscolor=ACCENT, padding=(22, 8), font=self._f_btn)
+        st.map("Accent.TButton",
+               background=[("active", "#6aa1ff"), ("pressed", "#3f7ae0"),
+                           ("disabled", "#2a3a57")],
+               foreground=[("disabled", "#8f9bb0")])
+
+        st.configure("Seg.TButton", background=CARD2, foreground=MUTED, bordercolor=CARD2,
+                     lightcolor=CARD2, darkcolor=CARD2, focuscolor=CARD2, padding=(10, 5))
+        st.map("Seg.TButton", background=[("active", "#333a46")],
+               foreground=[("active", FG)])
+
+        st.configure("SegOn.TButton", background=ACCENT, foreground="#ffffff",
+                     bordercolor=ACCENT, lightcolor=ACCENT, darkcolor=ACCENT,
+                     focuscolor=ACCENT, padding=(10, 5))
+        st.map("SegOn.TButton", background=[("active", "#6aa1ff")],
+               foreground=[("active", "#ffffff")])
+
+        st.configure("TCombobox", fieldbackground=CARD2, background=CARD2, foreground=FG,
+                     arrowcolor=MUTED, bordercolor=BORDER, lightcolor=BORDER,
+                     darkcolor=BORDER, padding=(8, 5))
+        st.map("TCombobox", fieldbackground=[("readonly", CARD2)],
+               foreground=[("readonly", FG)], arrowcolor=[("active", FG)],
+               bordercolor=[("focus", ACCENT)])
+
+        st.configure("TEntry", fieldbackground=CARD2, foreground=FG, insertcolor=FG,
+                     bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, padding=(8, 6))
+        st.map("TEntry", bordercolor=[("focus", ACCENT)])
+
+        self.option_add("*TCombobox*Listbox.background", CARD2)
+        self.option_add("*TCombobox*Listbox.foreground", FG)
+        self.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        self.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+        st.configure("Card.Vertical.TScrollbar", background="#3a414d", troughcolor=CARD,
+                     bordercolor=CARD, arrowcolor=MUTED, lightcolor="#3a414d",
+                     darkcolor="#3a414d", gripcount=0, arrowsize=12, width=11)
+        st.map("Card.Vertical.TScrollbar",
+               background=[("active", "#4a5260"), ("pressed", "#4a5260")])
+
+        self.option_add("*TCombobox*Listbox.borderWidth", 0)
+
+    # ---------- предпросмотр: тип ----------
+    def set_type(self, i):
+        self.type_idx = int(i) % len(self.TYPE_NAMES)
+        self._set_seg_styles()
+        self.show_preview()
+
+    def _set_seg_styles(self):
+        for i, b in enumerate(getattr(self, "_seg_btns", [])):
+            b.configure(style="SegOn.TButton" if i == self.type_idx else "Seg.TButton")
+
 
     def pick_src(self):
         import subprocess
@@ -1306,21 +1554,24 @@ class DepthUI(tk.Tk):
 
     def _update_input_hint(self):
         v = max(1, min(10, int(round(float(self.vars["input_mult"].get())))))
+        # множитель целый: вход модели = 200 px × v, дробные значения только мешают
+        if abs(float(self.vars["input_mult"].get()) - v) > 1e-6:
+            self.vars["input_mult"].set(v)
         px = 200 * v
-        self._input_lbl.configure(text=f"{v}x → {px} px")
-        # цвет подсказки: обычный режим — серый, большой вход — предупреждение
+        self._input_lbl.configure(text=f"{v}×")
+        # обычный режим — приглушённый текст, большой вход — предупреждение
         if v >= 8:
             self._ram_hint.configure(text=f"Осторожно: вход {px} px по длинной стороне — это много ОЗУ",
-                                     foreground="#e06666")
+                                     style="Warn.TLabel")
         elif v >= 6:
             self._ram_hint.configure(text=f"Вход {px} px — обычный режим для фото 1000–2000 px",
-                                     foreground="#7a7a7a")
+                                     style="Hint.TLabel")
         elif v >= 3:
             self._ram_hint.configure(text=f"Вход {px} px — быстрый черновой режим",
-                                     foreground="#7a7a7a")
+                                     style="Hint.TLabel")
         else:
             self._ram_hint.configure(text=f"Вход {px} px — очень грубо, только чтобы прикинуть",
-                                     foreground="#7a7a7a")
+                                     style="Hint.TLabel")
 
     def collect(self):
         c = dict(cfg)
@@ -1627,12 +1878,12 @@ class DepthUI(tk.Tk):
                     np.clip(dfloat, 0.0, 1.0)[..., None].astype(np.float32)], axis=-1)
                 write_exr(f"{OUT}/photo_colormap.exr", rgba)
 
-            if c.get("normal_exr"):
-                # нормали в tangent space: X=R, Y=G, Z=B (плоскость лицом к камере = +Z=синий);
-                # наклоны нормируются так же, как в рельефе, иначе карта выходит ровно-сиреневой
-                write_exr(f"{OUT}/photo_normal.exr",
-                          normal_map(dfloat, float(c.get("relief_radius", 6.0)),
-                                     float(c.get("relief_strength", 1.5))))
+            # нормали в tangent space: X=R, Y=G, Z=B (плоскость лицом к камере = +Z=синий).
+            # Считаем один раз: этот же массив идёт в предпросмотр «Нормаль»,
+            # поэтому файл и превью всегда совпадают
+            _nrm = normal_map(dfloat) if c.get("normal_exr") else None
+            if _nrm is not None:
+                write_exr(f"{OUT}/photo_normal.exr", _nrm)
 
             # исходное цветное фото в EXR (float linear) — для качества в меше
             _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
@@ -1685,12 +1936,13 @@ class DepthUI(tk.Tk):
 
             depth_p = depth_out.copy()
             col_p = Image.fromarray((crgb * 255.0).round().astype(np.uint8))
-            rel_p = apply_relief(dfloat, float(c.get("relief_radius", 6.0)),
-                                 float(c.get("relief_strength", 1.5)))
+            if _nrm is None:
+                _nrm = normal_map(dfloat)
+            nrm_p = Image.fromarray((_nrm * 255.0).astype(np.uint8))
             src_p = img_out.copy()
 
             self.after(0, lambda: self.done(depth_p.copy(), col_p.copy(),
-                                            rel_p.copy(), src_p.copy()))
+                                            nrm_p.copy(), src_p.copy()))
         except Exception as e:
             msg = str(e)
             import traceback
@@ -1699,9 +1951,7 @@ class DepthUI(tk.Tk):
             self.after(0, lambda msg=msg: self.fail(msg))
 
     def cycle_type(self):
-        self.type_idx = (self.type_idx + 1) % len(self.TYPE_NAMES)
-        self.lbl_type.configure(text=f"Тип: {self.TYPE_NAMES[self.type_idx]}")
-        self.show_preview()
+        self.set_type(self.type_idx + 1)
 
     def _schedule_resize(self):
         if hasattr(self, "_resize_after"):
@@ -1723,21 +1973,21 @@ class DepthUI(tk.Tk):
         if self.type_idx == 1:
             return self._cur_col, self._prev_col
         if self.type_idx == 2:
-            return self._cur_rel, self._prev_rel
+            return self._cur_nrm, self._prev_nrm
         return self._src_img, self._prev_src
 
-    def done(self, depth, col, rel, src):
+    def done(self, depth, col, nrm, src):
         STATE["busy"] = False
         self.btn_run.configure(state="normal")
         self.lbl_status.configure(text="Готово ✔")
         if self._cur_img is not None:
             self._prev_img = self._cur_img
             self._prev_col = self._cur_col
-            self._prev_rel = self._cur_rel
+            self._prev_nrm = self._cur_nrm
             self._prev_src = self._src_img
         self._cur_img = depth.copy()
         self._cur_col = col.copy()
-        self._cur_rel = rel.copy()
+        self._cur_nrm = nrm.copy()
         self._src_img = src.copy()
         self.show_preview()
 
