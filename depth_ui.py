@@ -587,7 +587,8 @@ def _slope_field(depth, radius=6.0, strength=1.5):
 def normal_map(depth, radius=6.0, strength=2.5):
     """Карта нормалей (tangent space, RGB 0..1) из карты глубины."""
     gx, gy = _slope_field(depth, radius, strength)
-    nx, ny, nz = -gx, -gy, np.ones_like(gx)
+    # OpenGL-конвенция (как в Blender): +Y смотрит вверх, а строки картинки идут вниз
+    nx, ny, nz = -gx, gy, np.ones_like(gx)
     ln = np.sqrt(nx * nx + ny * ny + nz * nz)
     return np.stack([nx / ln, ny / ln, nz / ln], axis=-1).astype(np.float32) * 0.5 + 0.5
 
