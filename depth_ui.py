@@ -94,14 +94,7 @@ MODEL_URLS = {
     "small": "depth_anything_v2_vits_dynamic.onnx",
     "base": "depth_anything_v2_vitb_dynamic.onnx",
     "large": "depth_anything_v2_vitl_dynamic.onnx",
-    "base_in": "depth_anything_v2_vitb_indoor_dynamic.onnx",
-    "base_out": "depth_anything_v2_vitb_outdoor_dynamic.onnx",
-    "large_in": "depth_anything_v2_vitl_indoor_dynamic.onnx",
-    "large_out": "depth_anything_v2_vitl_outdoor_dynamic.onnx",
 }
-
-METRIC_MODELS = {"zoe", "base_in", "base_out", "large_in", "large_out", "large_mix"}
-
 
 def download_model(key, dst):
     import urllib.request
@@ -848,7 +841,7 @@ def _write_mesh_glb(path, verts, cols, faces):
         f.write(bin_)
 
 
-def _infer_depth(model_path, img, nw, nh, metric=False, on_tick=None):
+def _infer_depth(model_path, img, nw, nh, on_tick=None):
     import subprocess
     import sys
     import tempfile
@@ -889,8 +882,6 @@ def _infer_depth(model_path, img, nw, nh, metric=False, on_tick=None):
                 pass
     d = d - d.min()
     d = d / (d.max() + 1e-8)
-    if metric:
-        d = 1.0 - d
     return d
 
 
@@ -1326,22 +1317,18 @@ class DepthUI(tk.Tk):
 
         # --- модель ---
         section("МОДЕЛЬ")
-        _m = str(cfg.get("model", "small")).lower()
-        if _m not in ("small", "base", "large", "midas", "zoe",
-                      "base_in", "base_out", "large_in", "large_out", "large_mix",
-                      "depthpro"):
+        # MiDaS, ZoeDepth и Indoor/Outdoor-варианты убраны из списка: их
+        # значения из старого settings.json сводим к ближайшей оставшейся модели
+        _m = {"midas": "base", "zoe": "base", "base_in": "base", "base_out": "base",
+              "large_in": "large", "large_out": "large",
+              "large_mix": "large"}.get(str(cfg.get("model", "small")).lower(),
+                                        str(cfg.get("model", "small")).lower())
+        if _m not in ("small", "base", "large", "depthpro"):
             _m = "small"
-        _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
-                  "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
-                  "large_in": "Large Indoor", "large_out": "Large Outdoor",
-                  # large_mix в этом окне не выбирается, но старый settings.json
-                  # мог его сохранить — иначе KeyError при запуске
-                  "large_mix": "Large", "depthpro": "Depth Pro"}
+        _mdisp = {"small": "Small", "base": "Base", "large": "Large", "depthpro": "Depth Pro"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(side, textvariable=self.vars["model"],
-                     values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
-                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor",
-                             "Depth Pro"],
+                     values=["Small", "Base", "Large", "Depth Pro"],
                      state="readonly").pack(fill="x")
         ttk.Label(side, text="Base и Large детальнее, но медленнее",
                   style="Hint.TLabel").pack(anchor="w", pady=(5, 0))
@@ -1968,10 +1955,6 @@ class DepthUI(tk.Tk):
     def collect(self):
         c = dict(cfg)
         c["model"] = {"small": "small", "base": "base", "large": "large",
-                      "midas": "midas", "zoedepth": "zoe", "zoe": "zoe",
-                      "base indoor": "base_in", "base outdoor": "base_out",
-                      "large indoor": "large_in",
-                      "large outdoor": "large_out",
                       "depth pro": "depthpro"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
@@ -2058,15 +2041,7 @@ class DepthUI(tk.Tk):
                     _write_mesh_glb(f"{OUT}/photo_points.glb", verts, cols, faces)
                 stage(100)
                 return
-            if c["model"] == "midas":
-                model_paths = [common.find_model("midas_v21_small_256.onnx")]
-                if not os.path.exists(model_paths[0]):
-                    raise ValueError("MiDaS: нет файла midas_v21_small_256.onnx в папке Z-depth")
-            elif c["model"] == "zoe":
-                model_paths = [common.find_model("zoedepth_nk_fp16.onnx")]
-                if not os.path.exists(model_paths[0]):
-                    raise ValueError("ZoeDepth: нет файла zoedepth_nk_fp16.onnx в папке Z-depth")
-            elif c["model"] == "depthpro":
+            if c["model"] == "depthpro":
                 model_paths = [depth_pro_dir()]
                 if not (depth_pro_modules_ok() and depth_pro_weights_ok()):
                     # первый выбор: torch/transformers и веса — с прогрессом в кнопке
@@ -2074,19 +2049,6 @@ class DepthUI(tk.Tk):
                     # выглядела бы как «застряло на 5 %»)
                     ensure_depth_pro(lambda f: stage(2 + 22 * f))
                 stage(24)
-            elif c["model"] == "large_mix":
-                labels = ("Large", "MiDaS", "Zoe")
-                model_paths = [common.find_model("depth_anything_v2_large.onnx"),
-                               common.find_model("midas_v21_small_256.onnx"),
-                               common.find_model("zoedepth_nk_fp16.onnx")]
-                for _lb, _p in zip(labels, model_paths):
-                    if not os.path.exists(_p):
-                        stage(4)
-                        if _lb == "Large":
-                            download_model("large", _p)
-                        else:
-                            raise ValueError(f"{_lb}: нет файла {_p}")
-                stage(8)
             else:
                 model_paths = [common.find_model(f"depth_anything_v2_{c['model']}.onnx")]
                 if not os.path.exists(model_paths[0]):
@@ -2156,10 +2118,6 @@ class DepthUI(tk.Tk):
                                 img = Image.fromarray((np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
                             nw = int(c["in_w"]) - int(c["in_w"]) % 14
                             nh = int(c["in_h"]) - int(c["in_h"]) % 14
-                            if c["model"] == "midas":
-                                nw = nh = 256
-                            elif c["model"] == "zoe":
-                                nw, nh = 512, 384
 
                             # Depth Pro уже показала 2–24 % на установке/загрузке,
                             # поэтому общий шаг «10 %» для неё не повторяем
@@ -2171,23 +2129,10 @@ class DepthUI(tk.Tk):
                                     model_paths[0], img, nw, nh,
                                     on_tick=lambda f: stage(25 + 23 * f))
                                 ds.append(_dp_d)
-                            elif c["model"] == "large_mix":
-                                sizes = ((nw, nh), (256, 256), (512, 384))
-                                for _n, _mp, (_nw, _nh) in zip(
-                                        ("large", "midas", "zoe"), model_paths, sizes):
-                                    _di = _infer_depth(_mp, img, _nw, _nh, metric=_n == "zoe",
-                                                       on_tick=lambda f: stage(10 + 38 * f))
-                                    if _di.shape != (nh, nw):
-                                        _di = np.asarray(Image.fromarray(_di).resize(
-                                            (nw, nh), Image.BICUBIC), dtype=np.float32)
-                                    ds.append(_di)
                             else:
                                 for _mp in model_paths:
                                     ds.append(_infer_depth(_mp, img, nw, nh,
-                                                           metric=c["model"] in METRIC_MODELS,
                                                            on_tick=lambda f: stage(10 + 38 * f)))
-                            if c["model"] == "large_mix":
-                                self.__dict__["_mix_ds"] = [np.asarray(_d, dtype=np.float32) for _d in ds]
                             d = np.mean(ds, axis=0)
                             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
             stage(50)
@@ -2257,19 +2202,6 @@ class DepthUI(tk.Tk):
             stage(68)
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
-            _mix_ds = self.__dict__.get("_mix_ds")
-            if _mix_ds:
-                for _tag, _di in zip(("large", "midas", "zoe"), _mix_ds):
-                    di = np.asarray(Image.fromarray(_di).resize((w, h), Image.LANCZOS), dtype=np.float32)
-                    mn, mx = float(di.min()), float(di.max())
-                    di = np.clip((di - mn) / (mx - mn + 1e-8), 0.0, 1.0)
-                    Image.fromarray((di * 255).astype(np.uint8)).convert("RGB").save(f"{OUT}/photo_depth_{_tag}.png")
-                    cdi = colormap_rgb(di)
-                    write_exr(f"{OUT}/photo_colormap_{_tag}.exr", np.concatenate([
-                        _srgb_to_linear(cdi).astype(np.float32),
-                        di[..., None].astype(np.float32)], axis=-1))
-                    Image.fromarray((cdi * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap_{_tag}.png")
-                self.__dict__["_mix_ds"] = None
             hp = self.__dict__.get("_hybrid_prev")
             if hp is not None and c.get("hybrid") and hp.get("rgb") is not None:
                 # второй рендер не пропадает: сохраняем его отдельно
