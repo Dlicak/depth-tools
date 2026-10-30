@@ -1271,9 +1271,15 @@ class DepthUI(tk.Tk):
         holder.pack(fill="both", expand=True)
         self.cur_view = tk.Label(holder, bg="#0d0f13", fg=MUTED, text="Обработайте фото", bd=0)
         self.cur_view.pack(fill="both", expand=True, padx=1, pady=1)
+        self._preview_holder = holder
         for w in (holder, self.cur_view):
             for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
                 w.bind(seq, self._wheel_type)
+        # запасной путь: колесо над предпросмотром листает типы, даже если
+        # событие пришло не в сам label (после показа фото он остаётся тем же,
+        # но у части окон/драйверов колесо уходит выше)
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            self.bind(seq, self._wheel_any, add="+")
 
 
         self._prev_img = None
@@ -2081,6 +2087,16 @@ class DepthUI(tk.Tk):
         up = getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0
         self.set_type(self.type_idx - 1 if up else self.type_idx + 1)
         return "break"
+
+    def _wheel_any(self, e):
+        h = self.__dict__.get("_preview_holder")
+        if h is None or not h.winfo_ismapped():
+            return None
+        x, y = getattr(e, "x_root", 0), getattr(e, "y_root", 0)
+        if not (h.winfo_rootx() <= x < h.winfo_rootx() + h.winfo_width()
+                and h.winfo_rooty() <= y < h.winfo_rooty() + h.winfo_height()):
+            return None
+        return self._wheel_type(e)
 
     def _schedule_resize(self):
         if hasattr(self, "_resize_after"):
