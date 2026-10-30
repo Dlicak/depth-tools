@@ -1525,8 +1525,12 @@ class DepthUI(tk.Tk):
             g_strength = float(c.get("guided", 0) or 0)
             if g_strength > 0:
                 guide = np.asarray(img.convert("L"), dtype=np.float32) / 255.0
-                radius = max(1.0, g_strength * 0.2)
-                dfull = guided_filter(guide, dfull, radius)
+                # Сглаживание: сила = и радиус окна, и eps. Если увеличивать только радиус
+                # (eps фиксированный), фильтр начинает тянуть текстуру фото в карту глубины —
+                # чем больше ползунок, тем "шумнее" результат (сглаживание работало наоборот).
+                radius = 2.0 + g_strength * 0.15
+                eps = 1e-4 * (1.0 + 10.0 * g_strength)
+                dfull = guided_filter(guide, dfull, radius, eps)
                 mn, mx = float(dfull.min()), float(dfull.max())
                 dfull = (dfull - mn) / (mx - mn + 1e-8)
             dfloat = np.clip(dfull, 0.0, 1.0)
@@ -1537,10 +1541,13 @@ class DepthUI(tk.Tk):
                 dfloat = np.clip((dfloat - dmean) * float(c["depth_contrast"]) + dmean, 0.0, 1.0)
             if c["invert"]:
                 dfloat = 1.0 - dfloat
+            # «Глубина от/до %» — это проценты расстояния от камеры: 0% = ближайшее,
+            # 100% = самое далёкое. В карте глубины наоборот: 1.0 = близко, 0.0 = далеко,
+            # поэтому границы зеркалятся, иначе «от» и «до» работают наоборот.
             lo = float(c.get("depth_lo", 0.0) or 0.0) / 100.0
             hi = float(c.get("depth_hi", 100.0) or 100.0) / 100.0
             if hi > lo + 1e-6:
-                dfloat = np.clip((dfloat - lo) / (hi - lo), 0.0, 1.0)
+                dfloat = np.clip((dfloat - (1.0 - hi)) / (hi - lo), 0.0, 1.0)
             g = float(c.get("depth_gamma", 1.0) or 1.0)
             if g != 1.0:
                 dfloat = np.clip(dfloat, 0.0, 1.0) ** (1.0 / g)
