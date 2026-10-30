@@ -125,6 +125,187 @@ def download_model(key, dst):
     os.replace(tmp, dst)
 
 
+# --- Depth Pro (apple/DepthPro-hf) ---
+# Тяжёлая модель на PyTorch: зависимости и ~1,9 ГБ весов ставятся только при
+# первом выборе, чтобы обычная установка «в один клик» оставалась лёгкой.
+DEPTH_PRO_DIRNAME = "DepthPro"
+DEPTH_PRO_FILES = ("config.json", "preprocessor_config.json", "model.safetensors")
+_DEPTH_PRO_MODULES = None
+
+
+def depth_pro_dir():
+    return os.path.join(common.model_dir(), DEPTH_PRO_DIRNAME)
+
+
+def depth_pro_weights_ok():
+    d = depth_pro_dir()
+    return all(os.path.exists(os.path.join(d, f)) for f in DEPTH_PRO_FILES)
+
+
+def depth_pro_modules_ok():
+    global _DEPTH_PRO_MODULES
+    if _DEPTH_PRO_MODULES is None:
+        import subprocess
+        import sys
+        r = subprocess.run([sys.executable, "-c", "import torch, transformers, safetensors"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _DEPTH_PRO_MODULES = r.returncode == 0
+    return _DEPTH_PRO_MODULES
+
+
+def download_hf_file(name, dst_dir, on_progress=None):
+    import urllib.request
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, name)
+    url = f"https://huggingface.co/apple/DepthPro-hf/resolve/main/{name}"
+    tmp = dst + ".part"
+    req = urllib.request.Request(url, headers={"User-Agent": "depth-tools"})
+    with urllib.request.urlopen(req) as r, open(tmp, "wb") as f:
+        total = int(r.headers.get("Content-Length", 0))
+        done = 0
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if on_progress is not None and total:
+                on_progress(done / float(total))
+    os.replace(tmp, dst)
+
+
+def install_depth_pro_deps(on_progress=None):
+    """torch (CPU-сборка), transformers и safetensors — в то же окружение,
+    где запущено приложение. Журнал пишем в каталог данных: если pip упадёт,
+    в ошибке будет путь к файлу."""
+    import subprocess
+    import sys
+    import time
+    log_path = os.path.join(OUT, "depth_pro_install.log")
+    cmds = [
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-input",
+         "--disable-pip-version-check", "--index-url",
+         "https://download.pytorch.org/whl/cpu", "torch"],
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--no-input",
+         "--disable-pip-version-check", "transformers", "safetensors"],
+    ]
+    with open(log_path, "w") as log:
+        for i, cmd in enumerate(cmds):
+            t0 = time.monotonic()
+            proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT)
+            while proc.poll() is None:
+                time.sleep(0.3)
+                if on_progress is not None:
+                    frac = 1.0 - math.exp(-(time.monotonic() - t0) / 20.0)
+                    on_progress((i + 0.95 * frac) / len(cmds))
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "Не удалось установить PyTorch/transformers для Depth Pro.\n"
+                    f"Подробности в файле:\n{log_path}")
+    global _DEPTH_PRO_MODULES
+    _DEPTH_PRO_MODULES = None
+
+
+def ensure_depth_pro(on_progress=None):
+    """Доставить зависимости и веса — вызывается только при первом выборе."""
+    def part(lo, hi):
+        def f(frac):
+            if on_progress is not None:
+                on_progress(lo + (hi - lo) * float(frac))
+        return f
+
+    if not depth_pro_modules_ok():
+        install_depth_pro_deps(part(0.0, 0.5))
+    d = depth_pro_dir()
+    todo = [f for f in DEPTH_PRO_FILES if not os.path.exists(os.path.join(d, f))]
+    for i, name in enumerate(todo):
+        download_hf_file(name, d,
+                         part(0.5 + 0.5 * i / len(todo),
+                              0.5 + 0.5 * (i + 1) / len(todo)))
+
+
+def _depth_pro_side():
+    """Сторона квадрата для сети. Меньше 1536 нельзя: патчи по 384 точки
+    должны делиться на самом мелком масштабе (0.25), иначе модель падает."""
+    env = os.environ.get("DEPTH_TOOLS_DEPTHPRO_SIDE")
+    try:
+        return max(1536, int(env)) if env else 1536
+    except ValueError:
+        return 1536
+
+
+def _infer_depth_pro(model_dir, img, nw, nh, on_tick=None):
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    worker = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "_depth_pro_infer.py")
+    side = _depth_pro_side()
+    av = avail_ram_mb()
+    if av is not None and av < 4200:
+        raise MemoryError(
+            "Depth Pro нужно ~6 ГБ свободной ОЗУ.\n"
+            "Закройте лишние программы или выберите модель поменьше.")
+    tf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tf, "PNG")
+    tf.close()
+    tmp_in = tf.name
+    tmp_out = tempfile.mktemp(suffix=".npy")
+    tmp_meta = tmp_out + ".json"
+    log_path = os.path.join(OUT, "depth_pro_run.log")
+    fov_y = DEFAULT_FOV_Y
+    try:
+        with open(log_path, "w") as log:
+            proc = subprocess.Popen(
+                [sys.executable, worker, model_dir, str(nw), str(nh), str(side),
+                 tmp_in, tmp_out, tmp_meta],
+                stdout=log, stderr=subprocess.STDOUT)
+            t0 = time.monotonic()
+            while proc.poll() is None:
+                time.sleep(0.25)
+                if on_tick is not None:
+                    on_tick(min(0.99, 1.0 - math.exp(-(time.monotonic() - t0) / 25.0)))
+                av = avail_ram_mb()
+                if av is not None and av < 400:
+                    proc.kill()
+                    raise MemoryError("Depth Pro остановлен: свободная ОЗУ закончилась.")
+        if proc.returncode != 0:
+            if proc.returncode < 0:
+                raise MemoryError(
+                    "Depth Pro остановлен: не хватило ОЗУ.\n"
+                    "Закройте лишние программы или выберите модель поменьше.")
+            tail = ""
+            try:
+                with open(log_path) as f:
+                    tail = "".join(f.readlines()[-3:]).strip()
+            except Exception:
+                pass
+            raise RuntimeError("Depth Pro не запустилась" + (f":\n{tail}" if tail else "."))
+        if not os.path.exists(tmp_out):
+            raise RuntimeError("Depth Pro не вернула карту глубины.")
+        d = np.load(tmp_out).astype(np.float32)
+        try:
+            with open(tmp_meta) as f:
+                meta = json.load(f)
+            fov_x = float(meta.get("fov_x") or 0.0)
+            if 5.0 <= fov_x <= 150.0:
+                # вертикальный угол считаем по пропорциям самого фото, а не по
+                # размеру входа сети: он округляется до кратного 14 и врёт на 5–6 %
+                fov_y = float(np.degrees(2.0 * np.arctan(
+                    np.tan(np.deg2rad(fov_x) / 2.0) * float(img.height) / float(img.width))))
+        except Exception:
+            pass
+    finally:
+        for t in (tmp_in, tmp_out, tmp_meta):
+            try:
+                if t:
+                    os.remove(t)
+            except Exception:
+                pass
+    return d, fov_y
+
+
 def open_path(path):
     try:
         if os.name == "nt":
@@ -1147,21 +1328,25 @@ class DepthUI(tk.Tk):
         section("МОДЕЛЬ")
         _m = str(cfg.get("model", "small")).lower()
         if _m not in ("small", "base", "large", "midas", "zoe",
-                      "base_in", "base_out", "large_in", "large_out", "large_mix"):
+                      "base_in", "base_out", "large_in", "large_out", "large_mix",
+                      "depthpro"):
             _m = "small"
         _mdisp = {"small": "Small", "base": "Base", "large": "Large", "midas": "MiDaS",
                   "zoe": "ZoeDepth", "base_in": "Base Indoor", "base_out": "Base Outdoor",
                   "large_in": "Large Indoor", "large_out": "Large Outdoor",
                   # large_mix в этом окне не выбирается, но старый settings.json
                   # мог его сохранить — иначе KeyError при запуске
-                  "large_mix": "Large"}
+                  "large_mix": "Large", "depthpro": "Depth Pro"}
         self.vars["model"] = tk.StringVar(value=_mdisp[_m])
         ttk.Combobox(side, textvariable=self.vars["model"],
                      values=["Small", "Base", "Large", "MiDaS", "ZoeDepth",
-                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor"],
+                             "Base Indoor", "Base Outdoor", "Large Indoor", "Large Outdoor",
+                             "Depth Pro"],
                      state="readonly").pack(fill="x")
         ttk.Label(side, text="Base и Large детальнее, но медленнее",
                   style="Hint.TLabel").pack(anchor="w", pady=(5, 0))
+        ttk.Label(side, text="Depth Pro точнее и в метрах, но ~минута на фото",
+                  style="Hint.TLabel").pack(anchor="w", pady=(2, 0))
 
         # --- глубина ---
         section("ГЛУБИНА")
@@ -1698,7 +1883,8 @@ class DepthUI(tk.Tk):
                       "midas": "midas", "zoedepth": "zoe", "zoe": "zoe",
                       "base indoor": "base_in", "base outdoor": "base_out",
                       "large indoor": "large_in",
-                      "large outdoor": "large_out"}.get(self.vars["model"].get().lower(), "small")
+                      "large outdoor": "large_out",
+                      "depth pro": "depthpro"}.get(self.vars["model"].get().lower(), "small")
         c["src"] = self.var_src.get()
         mult = max(1, int(round(float(self.vars["input_mult"].get()))))
         if not str(c["src"]).strip():
@@ -1749,6 +1935,12 @@ class DepthUI(tk.Tk):
             # файл не выбран/не читается — иначе ошибка уходила только в консоль
             messagebox.showerror("Ошибка", str(e))
             return
+        if c["model"] == "depthpro" and not (depth_pro_modules_ok() and depth_pro_weights_ok()):
+            if not messagebox.askyesno(
+                    "Depth Pro",
+                    "Для Depth Pro один раз нужно скачать PyTorch (~250 МБ) "
+                    "и веса модели (~1,9 ГБ).\n\nПродолжить?"):
+                return
         json.dump(c, open(CONFIG, "w"), indent=2)
         STATE["busy"] = True
         self.btn_run.set_busy(True)
@@ -1759,6 +1951,7 @@ class DepthUI(tk.Tk):
         # прогресс 0..100 на весь проход; у «Гибрида» два прохода делят шкалу
         base = float(c.get("_pct_base", 0.0))
         span = float(c.get("_pct_span", 100.0))
+        dp_fov = None
 
         def stage(rel):
             self._ui(self._set_progress, base + span * float(rel) / 100.0)
@@ -1785,6 +1978,14 @@ class DepthUI(tk.Tk):
                 model_paths = [common.find_model("zoedepth_nk_fp16.onnx")]
                 if not os.path.exists(model_paths[0]):
                     raise ValueError("ZoeDepth: нет файла zoedepth_nk_fp16.onnx в папке Z-depth")
+            elif c["model"] == "depthpro":
+                model_paths = [depth_pro_dir()]
+                if not (depth_pro_modules_ok() and depth_pro_weights_ok()):
+                    # первый выбор: torch/transformers и веса — с прогрессом в кнопке
+                    # (отдельная широкая полоса 2–24 %, иначе загрузка на 3 минуты
+                    # выглядела бы как «застряло на 5 %»)
+                    ensure_depth_pro(lambda f: stage(2 + 22 * f))
+                stage(24)
             elif c["model"] == "large_mix":
                 labels = ("Large", "MiDaS", "Zoe")
                 model_paths = [common.find_model("depth_anything_v2_large.onnx"),
@@ -1872,9 +2073,17 @@ class DepthUI(tk.Tk):
                             elif c["model"] == "zoe":
                                 nw, nh = 512, 384
 
-                            stage(10)
+                            # Depth Pro уже показала 2–24 % на установке/загрузке,
+                            # поэтому общий шаг «10 %» для неё не повторяем
+                            stage(10 if c["model"] != "depthpro" else 24)
                             ds = []
-                            if c["model"] == "large_mix":
+                            dp_fov = None
+                            if c["model"] == "depthpro":
+                                _dp_d, dp_fov = _infer_depth_pro(
+                                    model_paths[0], img, nw, nh,
+                                    on_tick=lambda f: stage(25 + 23 * f))
+                                ds.append(_dp_d)
+                            elif c["model"] == "large_mix":
                                 sizes = ((nw, nh), (256, 256), (512, 384))
                                 for _n, _mp, (_nw, _nh) in zip(
                                         ("large", "midas", "zoe"), model_paths, sizes):
@@ -2015,18 +2224,16 @@ class DepthUI(tk.Tk):
                 write_exr(f"{OUT}/photo_normal.exr", _nrm)
             stage(80)
 
-            # исходное цветное фото в EXR (float linear) — для качества в меше
-            _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
-            write_exr(f"{OUT}/photo_src.exr", _srgb_to_linear(np.clip(_i, 0.0, 1.0)).astype(np.float32))
-
             if c.get("ply_out") or c.get("glb_out"):
                 try:
                     if c.get("ply_out"):
                         write_ply(f"{OUT}/photo_points.ply", dfloat, img_out,
+                                  fov_y=dp_fov or DEFAULT_FOV_Y,
                                   on_progress=lambda f: stage(82 + 12 * f))
                     if c.get("glb_out"):
                         stage(96)
-                        write_glb(f"{OUT}/photo_points.glb", dfloat, img_out)
+                        write_glb(f"{OUT}/photo_points.glb", dfloat, img_out,
+                                  fov_y=dp_fov or DEFAULT_FOV_Y)
                         stage(98)
                 except Exception as e:
                     print("ply/glb error:", e)
