@@ -1423,6 +1423,10 @@ class DepthUI(tk.Tk):
                            "Цветная карта EXR", "Нормали EXR", "Цветное фото"]
         self.TYPE_KEYS = ["depth", "depth", "depth", "col", "nrm", "src"]
         self.TYPE_FLAGS = ["depth16", "depth32", "depth_exr", "cmap_exr", "normal_exr", None]
+        # картинка у 16-бит PNG, float TIFF и EXR одна и та же (те же значения
+        # глубины), отличается только точность файла — пишем её рядом с размером
+        self.TYPE_INFO = ["16 бит", "32 бит float", "EXR float",
+                          "8 бит/канал", "8 бит/канал", "исходное"]
         self.type_idx = 0
 
         top = ttk.Frame(view, style="Card.TFrame")
@@ -2370,7 +2374,8 @@ class DepthUI(tk.Tk):
         cur, prev = self._all_images()
         if self.var_show_prev.get() and prev is not None:
             cur = prev
-        self.lbl_size.configure(text=f"{cur.width}×{cur.height}" if cur else "—")
+        info = self.TYPE_INFO[self.type_idx] if cur else ""
+        self.lbl_size.configure(text=f"{cur.width}×{cur.height} · {info}" if cur else "—")
         self._set_view(self.cur_view, cur, "Обработайте фото")
 
     def _set_view(self, widget, img, placeholder):
