@@ -1430,7 +1430,12 @@ class DepthUI(tk.Tk):
         self.btn_run.pack(fill="x")
 
         # --- предпросмотр ---
-        self.TYPE_NAMES = ["Глубина", "Цветная карта EXR", "Нормали EXR", "Цветное фото"]
+        # каждый тип — своя галочка из «Результатов» (PLY/GLB/инверсия картинки
+        # не дают, поэтому вкладок у них нет); «Цветное фото» — всегда
+        self.TYPE_NAMES = ["16-бит PNG", "32-бит TIFF", "Глубина EXR",
+                           "Цветная карта EXR", "Нормали EXR", "Цветное фото"]
+        self.TYPE_KEYS = ["depth", "depth", "depth", "col", "nrm", "src"]
+        self.TYPE_FLAGS = ["depth16", "depth32", "depth_exr", "cmap_exr", "normal_exr", None]
         self.type_idx = 0
 
         top = ttk.Frame(view, style="Card.TFrame")
@@ -1442,16 +1447,18 @@ class DepthUI(tk.Tk):
         bar = ttk.Frame(view, style="Card.TFrame")
         bar.pack(fill="x", pady=(9, 9))
         self.var_show_prev = tk.BooleanVar(value=False)
-        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(side="left", padx=(0, 8))
+        # «Предыдущий» — отдельной строкой: типов стало шесть, в одну строку
+        # с флажком они не влезают на минимальном окне
+        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(anchor="w", pady=(0, 6))
         self.var_show_prev.trace_add("write", lambda *_: self.show_preview())
         seg = ttk.Frame(bar, style="Card.TFrame")
-        seg.pack(side="left")
+        seg.pack(fill="x")
+        self._seg = seg
+        self._type_bar = bar
+        self._type_rows = []
         self._seg_btns = []
-        for i, name in enumerate(self.TYPE_NAMES):
-            b = ttk.Button(seg, text=name, style="Seg.TButton",
-                           command=lambda i=i: self.set_type(i))
-            b.pack(side="left", padx=(0, 3))
-            self._seg_btns.append(b)
+        self._type_w = {}
+        bar.bind("<Configure>", self._layout_types)
         holder = tk.Frame(view, bg=BORDER)
         holder.pack(fill="both", expand=True)
         self.cur_view = tk.Label(holder, bg="#0d0f13", fg=MUTED, text="Обработайте фото", bd=0)
@@ -1479,8 +1486,10 @@ class DepthUI(tk.Tk):
 
         # «Цветная карта» и «Нормаль» нужны, только когда их файлы включены
         # в «Результатах»: иначе предпросмотр предлагал типы, которых не будет
-        for _k in ("cmap_exr", "normal_exr"):
-            self.vars[_k].trace_add("write", lambda *_: self._refresh_types())
+        for _i, _k in enumerate(self.TYPE_FLAGS):
+            if _k:
+                self.vars[_k].trace_add("write", lambda *_, i=_i: self._on_type_flag(i))
+        self._layout_types()
         self._refresh_types()
         _bind_wheel(side)
         self._ui_q = queue.Queue()
@@ -1582,30 +1591,74 @@ class DepthUI(tk.Tk):
 
     # ---------- предпросмотр: тип ----------
     def set_type(self, i):
-        self.type_idx = int(i) % len(self.TYPE_NAMES)
+        i = int(i) % len(self.TYPE_NAMES)
+        if not self._type_visible()[i]:
+            return
+        self.type_idx = i
         self._set_seg_styles()
         self.show_preview()
 
     def _type_visible(self):
-        """Видимость типов предпросмотра: «Глубина» и «Цветное фото» — всегда,
-        «Цветная карта» и «Нормаль» — по галочкам «Цветная карта EXR» и
-        «Нормали EXR»."""
-        return [True,
-                bool(self.vars["cmap_exr"].get()),
-                bool(self.vars["normal_exr"].get()),
-                True]
+        """Видимость типов предпросмотра — ровно по галочкам «Результатов»;
+        «Цветное фото» (базовое фото) видно всегда."""
+        return [True if k is None else bool(self.vars[k].get()) for k in self.TYPE_FLAGS]
+
+    def _on_type_flag(self, i):
+        """Галочку включили — сразу показываем этот тип: иначе включённая
+        «Цветная карта EXR» оставалась незамеченной."""
+        self._refresh_types()
+        if self._type_visible()[i]:
+            self.set_type(i)
 
     def _refresh_types(self):
         vis = self._type_visible()
         if not vis[self.type_idx]:
             self.type_idx = vis.index(True)
-        for b in self._seg_btns:
-            b.pack_forget()
-        for i, b in enumerate(self._seg_btns):
-            if vis[i]:
-                b.pack(side="left", padx=(0, 3))
+        self._layout_types()
         self._set_seg_styles()
         self.show_preview()
+
+    def _layout_types(self, _e=None):
+        """Раскладываем кнопки типов по доступной ширине: шесть подписей в одну
+        строку не влезают на минимальном окне, поэтому при нехватке места
+        переносим их во второй ряд. Кнопки всегда создаются сразу в своём ряду:
+        reparent через pack(in_=...) в Tk оставлял их «mapped», но не рисовал."""
+        seg = self.__dict__.get("_seg")
+        if seg is None:
+            return
+        vis = self._type_visible()
+        avail = seg.winfo_width()
+        if avail < 100:
+            avail = 560
+        key = (tuple(vis), avail // 24)
+        if key == self.__dict__.get("_type_key"):
+            return
+        self.__dict__["_type_key"] = key
+        for r in self._type_rows:
+            r.destroy()
+        self._type_rows = []
+        self._seg_btns = []
+        row = None
+        x = 0
+        for i, name in enumerate(self.TYPE_NAMES):
+            if not vis[i]:
+                continue
+            w = self._type_w.get(name)
+            if w is None:
+                tmp = ttk.Button(seg, text=name, style="Seg.TButton")
+                w = tmp.winfo_reqwidth()
+                tmp.destroy()
+                self._type_w[name] = w
+            if row is None or (x and x + w > avail):
+                row = ttk.Frame(seg, style="Card.TFrame")
+                row.pack(anchor="w", pady=(0, 3))
+                self._type_rows.append(row)
+                x = 0
+            b = ttk.Button(row, text=name, style="Seg.TButton",
+                           command=lambda i=i: self.set_type(i))
+            b.pack(side="left", padx=(0, 3))
+            self._seg_btns.append(b)
+            x += w + 3
 
     def _step_type(self, step):
         """Следующий/предыдущий видимый тип — скрытые пропускаются."""
@@ -2358,11 +2411,12 @@ class DepthUI(tk.Tk):
         """Текущая и предыдущая картинка выбранного типа."""
         if self._cur_img is None:
             return None, None
-        if self.type_idx == 0:
+        key = self.TYPE_KEYS[self.type_idx]
+        if key == "depth":
             return self._cur_img, self._prev_img
-        if self.type_idx == 1:
+        if key == "col":
             return self._cur_col, self._prev_col
-        if self.type_idx == 2:
+        if key == "nrm":
             return self._cur_nrm, self._prev_nrm
         return self._src_img, self._prev_src
 
