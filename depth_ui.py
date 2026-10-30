@@ -1248,7 +1248,7 @@ class DepthUI(tk.Tk):
         head = ttk.Frame(outer, style="Root.TFrame")
         head.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         ttk.Label(head, text="Карта глубины", style="Title.TLabel").pack(side="left")
-        ttk.Label(head, text="фото → глубина → PNG · TIFF · EXR · PLY · GLB",
+        ttk.Label(head, text="глубина → PNG · TIFF · EXR · PLY · GLB",
                   style="Muted.TLabel").pack(side="left", padx=(12, 0), pady=(7, 0))
 
         body = ttk.Frame(outer, style="Root.TFrame")
@@ -1477,7 +1477,11 @@ class DepthUI(tk.Tk):
         self._src_img = None
         self._prev_src = None
 
-        self._set_seg_styles()
+        # «Цветная карта» и «Нормаль» нужны, только когда их файлы включены
+        # в «Результатах»: иначе предпросмотр предлагал типы, которых не будет
+        for _k in ("cmap_exr", "normal_exr"):
+            self.vars[_k].trace_add("write", lambda *_: self._refresh_types())
+        self._refresh_types()
         _bind_wheel(side)
         self._ui_q = queue.Queue()
         self.after(60, self._poll_ui)
@@ -1581,6 +1585,37 @@ class DepthUI(tk.Tk):
         self.type_idx = int(i) % len(self.TYPE_NAMES)
         self._set_seg_styles()
         self.show_preview()
+
+    def _type_visible(self):
+        """Видимость типов предпросмотра: «Глубина» и «Цветное фото» — всегда,
+        «Цветная карта» и «Нормаль» — по галочкам «Цветная карта EXR» и
+        «Нормали EXR»."""
+        return [True,
+                bool(self.vars["cmap_exr"].get()),
+                bool(self.vars["normal_exr"].get()),
+                True]
+
+    def _refresh_types(self):
+        vis = self._type_visible()
+        if not vis[self.type_idx]:
+            self.type_idx = vis.index(True)
+        for b in self._seg_btns:
+            b.pack_forget()
+        for i, b in enumerate(self._seg_btns):
+            if vis[i]:
+                b.pack(side="left", padx=(0, 4))
+        self._set_seg_styles()
+        self.show_preview()
+
+    def _step_type(self, step):
+        """Следующий/предыдущий видимый тип — скрытые пропускаются."""
+        vis = self._type_visible()
+        n = len(vis)
+        for k in range(1, n + 1):
+            j = (self.type_idx + step * k) % n
+            if vis[j]:
+                self.set_type(j)
+                return
 
     def _set_seg_styles(self):
         for i, b in enumerate(getattr(self, "_seg_btns", [])):
@@ -2289,11 +2324,11 @@ class DepthUI(tk.Tk):
             self._ui(self.fail, msg)
 
     def cycle_type(self):
-        self.set_type(self.type_idx + 1)
+        self._step_type(1)
 
     def _wheel_type(self, e):
         up = getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0
-        self.set_type(self.type_idx - 1 if up else self.type_idx + 1)
+        self._step_type(-1 if up else 1)
         return "break"
 
     def _wheel_any(self, e):
