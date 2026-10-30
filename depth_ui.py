@@ -22,6 +22,7 @@ DEFAULTS = {
     "depth_hi": 100.0,
     "depth_contrast": 1.0,
     "relief_radius": 6.0,
+    "relief_strength": 1.5,
     "out_size": "300x300",
     "invert": False,
     "render2": False,
@@ -308,21 +309,36 @@ def png_write_rgb16(path, rgb01):
         f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-def apply_relief(gray, radius=1.5, smooth_map=None, smooth_radius=0.0):
-    r = max(0.0, float(radius))
-    g = np.asarray(gray.convert("L"), dtype=np.float32)
-    if smooth_map is not None and smooth_radius > 0:
-        a = np.asarray(gray.filter(ImageFilter.GaussianBlur(r)), dtype=np.float32)
-        b = np.asarray(gray.filter(ImageFilter.GaussianBlur(r + smooth_radius)), dtype=np.float32)
-        g = a * (1 - smooth_map) + b * smooth_map
+def apply_relief(depth, radius=6.0, strength=1.5):
+    """Рельеф 3D: освещение по нормалям карты глубины (свет сверху-слева).
+
+    depth — float-массив 0..1 (1.0 = близко к камере) или PIL-картинка.
+    radius — предварительное сглаживание карты, strength — сила рельефа.
+    """
+    if isinstance(depth, Image.Image):
+        d = np.asarray(depth.convert("L"), dtype=np.float32) / 255.0
     else:
-        g = np.asarray(gray.filter(ImageFilter.GaussianBlur(r)), dtype=np.float32)
-    gy, gx = np.gradient(g)
-    n = np.sqrt(1 + gx * gx + gy * gy)
-    lx, ly, lz = 0.5, 0.5, 1.0
-    ln = np.sqrt(lx * lx + ly * ly + lz * lz)
-    shade = np.clip((-gx * lx - gy * ly + lz) / (n * ln), 0, 1)
-    return Image.fromarray((shade * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(r * 0.5))
+        d = np.asarray(depth, dtype=np.float32)
+        if d.ndim == 3:
+            d = d[..., 0]
+        d = np.clip(d, 0.0, 1.0)
+    h, w = d.shape
+    # и сглаживание, и наклон считаем «на 1000 px»: рельеф одинаково выглядит
+    # на выходе 300 px и 3000 px
+    k = max(1.0, max(h, w) / 1000.0)
+    d = _blur_f(d, max(0.0, float(radius)) * k)
+    gy, gx = np.gradient(d)
+    gx, gy = gx * k, gy * k
+    # авто-масштаб по 90-му процентилю: иначе края выжигаются в чёрно-белое,
+    # а середина (лицо, склон) остаётся плоской серой заливкой
+    amp = float(np.percentile(np.hypot(gx, gy), 90)) or 1.0
+    gain = max(0.0, float(strength)) / max(amp, 1e-6)
+    nx, ny, nz = -gx * gain, -gy * gain, np.ones_like(d)
+    ln = np.sqrt(nx * nx + ny * ny + nz * nz)
+    lx, ly, lz = -0.55, -0.55, 0.45
+    ll = math.sqrt(lx * lx + ly * ly + lz * lz)
+    shade = np.clip((nx * lx + ny * ly + nz * lz) / (ln * ll), 0.0, 1.0)
+    return Image.fromarray((shade * 255).astype(np.uint8))
 
 
 def _points_field(dfloat, img_rgb, fov_y=90.0, scale=1.0):
@@ -830,9 +846,9 @@ class DepthUI(tk.Tk):
         slider_grid.columnconfigure(0, weight=1)
         slider_grid.columnconfigure(1, weight=1)
 
-        def slider(label, key, lo, hi, fmt, r, c):
+        def slider(label, key, lo, hi, fmt, r, c, span=1):
             cell = ttk.Frame(slider_grid)
-            cell.grid(row=r, column=c, sticky="ew", padx=4, pady=3)
+            cell.grid(row=r, column=c, columnspan=span, sticky="ew", padx=4, pady=3)
             ttk.Label(cell, text=label, width=15).pack(side="left")
             var = tk.DoubleVar(value=float(cfg[key]))
             s = ttk.Scale(cell, from_=lo, to=hi, variable=var, orient="horizontal",
@@ -848,6 +864,7 @@ class DepthUI(tk.Tk):
         slider("Контраст карты", "depth_contrast", 0.0, 4.0, lambda v: f"{v:.2f}", 1, 1)
         slider("Сглаживание", "guided", 0, 100, lambda v: f"{v:.0f}", 2, 0)
         slider("Шумодав", "denoise", 0, 100, lambda v: f"{v:.0f}", 2, 1)
+        slider("Рельеф 3D", "relief_strength", 0.2, 4.0, lambda v: f"{v:.1f}", 3, 0, 2)
 
         # --- разрешение входа ---
         row = ttk.Frame(self)
@@ -1619,7 +1636,8 @@ class DepthUI(tk.Tk):
 
             depth_p = depth_out.copy()
             col_p = Image.fromarray((crgb * 255.0).round().astype(np.uint8))
-            rel_p = apply_relief(depth_out.convert("L"), float(c.get("relief_radius", 6.0)))
+            rel_p = apply_relief(dfloat, float(c.get("relief_radius", 6.0)),
+                                 float(c.get("relief_strength", 1.5)))
             src_p = img_out.copy()
 
             self.after(0, lambda: self.done(depth_p.copy(), col_p.copy(),
