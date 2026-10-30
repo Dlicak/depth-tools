@@ -39,9 +39,9 @@ DEFAULTS = {
     "invert": False,
     "render2": False,
     "input_mult": 6.0,
-    "depth16": False,
-    "depth32": False,
-    "depth_exr": False,
+    # глубина: битность + формат (раньше было три отдельных галочки)
+    "depth_bits": 16,
+    "depth_fmt": "png",
     "cmap_exr": False,
     "normal_exr": False,
     "ply_out": False,
@@ -53,6 +53,23 @@ DEFAULTS = {
     "guided": 45.0,
     "denoise": 0.0,
 }
+
+# Какие форматы поддерживают какую битность: PNG — 8 и 16 бит, TIFF — ещё и
+# float32, EXR — только float32.
+DEPTH_OK = {"png": (8, 16), "tif": (8, 16, 32), "exr": (32,)}
+DEPTH_FMT_NAMES = {"png": "PNG", "tif": "TIFF", "exr": "EXR"}
+
+
+def depth_file_name(bits, fmt):
+    """Имя файла глубины для выбранной пары битность/формат."""
+    bits, fmt = int(bits), str(fmt)
+    ext = {"png": "png", "tif": "tif", "exr": "exr"}[fmt]
+    if bits == 16:
+        return f"photo_depth_16.{ext}"
+    if bits == 32:
+        return f"photo_depth_32.{ext}"
+    return f"photo_depth.{ext}"
+
 
 cfg = DEFAULTS.copy()
 _raw = {}
@@ -76,6 +93,22 @@ if cfg.get("_input_scheme") != "200x":
             cfg["input_mult"] = max(1.0, min(10.0, round(_long / 200.0)))
     cfg["_input_scheme"] = "200x"
 
+# Раньше глубина сохранялась тремя галочками (16-бит PNG / 32-бит TIFF /
+# «Глубина EXR»), теперь это битность + формат: переносим выбор из старого файла
+if "depth_bits" not in _raw or "depth_fmt" not in _raw:
+    _bits, _fmt = 16, "png"
+    if cfg.get("depth_exr"):
+        _bits, _fmt = 32, "exr"
+    elif cfg.get("depth32"):
+        _bits, _fmt = 32, "tif"
+    elif cfg.get("depth16"):
+        _bits, _fmt = 16, "png"
+    cfg["depth_bits"], cfg["depth_fmt"] = _bits, _fmt
+if cfg.get("depth_fmt") not in DEPTH_OK:
+    cfg["depth_fmt"] = "png"
+if cfg.get("depth_bits") not in DEPTH_OK[cfg["depth_fmt"]]:
+    cfg["depth_bits"] = DEPTH_OK[cfg["depth_fmt"]][-1]
+
 # «Карта нормалей» в старых настройках называлась normal_png
 if "normal_exr" not in _raw and "normal_png" in _raw:
     cfg["normal_exr"] = bool(_raw["normal_png"])
@@ -84,7 +117,8 @@ if "normal_exr" not in _raw and "normal_png" in _raw:
 for _stale in ("ply_fov", "ply_scale", "compress", "overlay_alpha", "focus_enable",
                "focus_x", "focus_y", "focus_radius", "dof_strength", "normal_png",
                "gen", "gen_amp", "gen_freq", "fx_strength",
-               "relief_radius", "relief_strength"):
+               "relief_radius", "relief_strength",
+               "depth16", "depth32", "depth_exr"):
     cfg.pop(_stale, None)
 
 STATE = {"busy": False}
@@ -1390,8 +1424,10 @@ class DepthUI(tk.Tk):
 
         # --- результаты ---
         section("РЕЗУЛЬТАТЫ")
+        nice = ttk.Frame(side, style="Card.TFrame")
+        nice.pack(fill="x")
         grid = ttk.Frame(side, style="Card.TFrame")
-        grid.pack(fill="x")
+        grid.pack(fill="x", pady=(6, 0))
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 
@@ -1400,15 +1436,37 @@ class DepthUI(tk.Tk):
             NiceCheck(grid, text, var).grid(row=r, column=c, sticky="w", pady=3, padx=(0, 6))
             self.vars[key] = var
 
-        check("16-бит PNG", "depth16", 0, 0)
-        check("32-бит TIFF", "depth32", 0, 1)
-        check("Глубина EXR", "depth_exr", 1, 0)
-        check("Цветная карта EXR", "cmap_exr", 1, 1)
-        check("Нормали EXR", "normal_exr", 2, 0)
-        check("XYZ-облако PLY", "ply_out", 2, 1)
-        check("Модель GLB", "glb_out", 3, 0)
-        check("Инверсия", "invert", 3, 1)
-        check("Гибрид (2 прохода)", "render2", 4, 0)
+        # глубина: сначала битность, потом формат файла
+        self.vars["depth_bits"] = tk.StringVar(value=str(int(cfg.get("depth_bits", 16))))
+        self.vars["depth_fmt"] = tk.StringVar(value=str(cfg.get("depth_fmt", "png")))
+        self._bit_btns = {}
+        self._fmt_btns = {}
+
+        def seg_row(label, key, options, store):
+            row = ttk.Frame(nice, style="Card.TFrame")
+            row.pack(fill="x", pady=(0, 4))
+            ttk.Label(row, text=label, style="Card.TLabel", width=8,
+                      anchor="w").pack(side="left")
+            for val, text in options:
+                b = ttk.Button(row, text=text, style="Seg.TButton",
+                               command=lambda v=val: self._pick_depth(key, v))
+                b.pack(side="left", padx=(0, 4))
+                store[val] = b
+
+        seg_row("Глубина", "bits", (("8", "8 бит"), ("16", "16 бит"), ("32", "32 бит")),
+                self._bit_btns)
+        seg_row("Формат", "fmt", (("png", "PNG"), ("tif", "TIFF"), ("exr", "EXR")),
+                self._fmt_btns)
+        self._depth_hint = ttk.Label(nice, text="", style="Hint.TLabel")
+        self._depth_hint.pack(anchor="w", pady=(0, 6))
+        self._refresh_depth_ui()
+
+        check("Цветная карта EXR", "cmap_exr", 0, 0)
+        check("Нормали EXR", "normal_exr", 0, 1)
+        check("XYZ-облако PLY", "ply_out", 1, 0)
+        check("Модель GLB", "glb_out", 1, 1)
+        check("Инверсия", "invert", 2, 0)
+        check("Гибрид (2 прохода)", "render2", 2, 1)
 
         # --- нижняя панель: кнопка во всю ширину ---
         foot = ttk.Frame(outer, style="Root.TFrame")
@@ -1417,16 +1475,11 @@ class DepthUI(tk.Tk):
         self.btn_run.pack(fill="x")
 
         # --- предпросмотр ---
-        # каждый тип — своя галочка из «Результатов» (PLY/GLB/инверсия картинки
-        # не дают, поэтому вкладок у них нет); «Цветное фото» — всегда
-        self.TYPE_NAMES = ["16-бит PNG", "32-бит TIFF", "Глубина EXR",
-                           "Цветная карта EXR", "Нормали EXR", "Цветное фото"]
-        self.TYPE_KEYS = ["depth", "depth", "depth", "col", "nrm", "src"]
-        self.TYPE_FLAGS = ["depth16", "depth32", "depth_exr", "cmap_exr", "normal_exr", None]
-        # картинка у 16-бит PNG, float TIFF и EXR одна и та же (те же значения
-        # глубины), отличается только точность файла — пишем её рядом с размером
-        self.TYPE_INFO = ["16 бит", "32 бит float", "EXR float",
-                          "8 бит/канал", "8 бит/канал", "исходное"]
+        # «Глубина» — всегда (в заголовке видно выбранную битность и формат),
+        # остальные типы — по галочкам; PLY/GLB/инверсия картинки не дают
+        self.TYPE_NAMES = ["Глубина", "Цветная карта EXR", "Нормали EXR", "Цветное фото"]
+        self.TYPE_KEYS = ["depth", "col", "nrm", "src"]
+        self.TYPE_FLAGS = [None, "cmap_exr", "normal_exr", None]
         self.type_idx = 0
 
         top = ttk.Frame(view, style="Card.TFrame")
@@ -1579,6 +1632,54 @@ class DepthUI(tk.Tk):
                background=[("active", "#4a5260"), ("pressed", "#4a5260")])
 
         self.option_add("*TCombobox*Listbox.borderWidth", 0)
+
+    # ---------- глубина: битность и формат ----------
+    def _pick_depth(self, key, val):
+        """Битность и формат связаны: EXR — только 32 бита, PNG — 8 или 16.
+        Выбор невозможной пары сам поправляет вторую половину."""
+        bits, fmt = self.vars["depth_bits"], self.vars["depth_fmt"]
+        if key == "bits":
+            bits.set(str(val))
+            if int(val) not in DEPTH_OK.get(fmt.get(), ()):
+                fmt.set("tif" if int(val) == 32 else "png")
+        else:
+            fmt.set(val)
+            if int(bits.get()) not in DEPTH_OK.get(val, ()):
+                bits.set(str(DEPTH_OK[val][-1]))
+        self._refresh_depth_ui()
+
+    def _refresh_depth_ui(self):
+        bits = self.vars["depth_bits"].get()
+        fmt = self.vars["depth_fmt"].get()
+        for v, b in getattr(self, "_bit_btns", {}).items():
+            b.configure(style="SegOn.TButton" if v == bits else "Seg.TButton")
+        for v, b in getattr(self, "_fmt_btns", {}).items():
+            b.configure(style="SegOn.TButton" if v == fmt else "Seg.TButton")
+        hint = getattr(self, "_depth_hint", None)
+        if hint is not None:
+            hint.configure(text="Файл: " + depth_file_name(bits, fmt))
+        self._update_size_label()
+
+    def _type_info(self):
+        if not hasattr(self, "TYPE_KEYS"):
+            return ""
+        key = self.TYPE_KEYS[self.type_idx]
+        if key == "depth":
+            return "%s бит · %s" % (self.vars["depth_bits"].get(),
+                                    DEPTH_FMT_NAMES.get(self.vars["depth_fmt"].get(), ""))
+        return "8 бит/канал" if key in ("col", "nrm") else "исходное"
+
+    def _update_size_label(self, cur=None):
+        if not hasattr(self, "lbl_size"):
+            return
+        if cur is None:
+            try:
+                cur, _ = self._all_images()
+            except Exception:
+                cur = None
+        info = self._type_info() if cur else ""
+        self.lbl_size.configure(
+            text=f"{cur.width}×{cur.height} · {info}" if cur else "—")
 
     # ---------- предпросмотр: тип ----------
     def set_type(self, i):
@@ -1989,9 +2090,8 @@ class DepthUI(tk.Tk):
                 c[k] = float(var.get())
         c["invert"] = bool(self.vars["invert"].get())
         c["render2"] = bool(self.vars["render2"].get())
-        c["depth16"] = bool(self.vars["depth16"].get())
-        c["depth32"] = bool(self.vars["depth32"].get())
-        c["depth_exr"] = bool(self.vars["depth_exr"].get())
+        c["depth_bits"] = int(self.vars["depth_bits"].get())
+        c["depth_fmt"] = str(self.vars["depth_fmt"].get())
         c["cmap_exr"] = bool(self.vars["cmap_exr"].get())
         c["normal_exr"] = bool(self.vars["normal_exr"].get())
         c["ply_out"] = bool(self.vars["ply_out"].get())
@@ -2193,16 +2293,33 @@ class DepthUI(tk.Tk):
                 depth_out = depth_out.filter(ImageFilter.GaussianBlur(smooth))
                 dfloat = _blur_f(dfloat, smooth)
 
-            if c.get("depth_exr"):
+            # глубина: одна пара «битность + формат» из «Результатов»
+            _bits = int(c.get("depth_bits", 16))
+            _fmt = str(c.get("depth_fmt", "png"))
+            _d01 = np.clip(dfloat, 0.0, 1.0)
+            _dpath = f"{OUT}/{depth_file_name(_bits, _fmt)}"
+            # старые варианты глубины (другая битность/формат) убираем, чтобы
+            # в папке не лежали файлы от прошлых запусков
+            for _of, _obits in DEPTH_OK.items():
+                for _ob in _obits:
+                    _old = f"{OUT}/{depth_file_name(_ob, _of)}"
+                    if _old != _dpath:
+                        try:
+                            os.remove(_old)
+                        except OSError:
+                            pass
+            if _fmt == "exr":
                 # бело-чёрная глубина 0..1 без гаммы — то, что читают ноды в Blender
-                write_exr(f"{OUT}/photo_depth.exr", np.clip(dfloat, 0.0, 1.0).astype(np.float32))
+                write_exr(_dpath, _d01.astype(np.float32))
+            elif _bits == 16:
+                Image.fromarray((_d01 * 65535).astype(np.uint16)).save(_dpath)
+            elif _bits == 32:
+                Image.fromarray(_d01).save(_dpath)
+            else:
+                Image.fromarray((_d01 * 255).astype(np.uint8)).save(_dpath)
             # исходное фото всегда сохраняем в EXR (float linear RGB) — для цвета меша
             write_exr(f"{OUT}/photo_src.exr",
                       _srgb_to_linear(np.asarray(img_out, dtype=np.float32) / 255.0))
-            if c["depth16"]:
-                Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
-            if c.get("depth32"):
-                Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
             stage(68)
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
@@ -2230,7 +2347,7 @@ class DepthUI(tk.Tk):
                 crgb = np.clip(crgb * 0.5 + rgb1 * 0.5, 0.0, 1.0)
                 self._hybrid_prev = None
             Image.fromarray((crgb * 255.0).round().astype(np.uint8)).save(f"{OUT}/photo_colormap.png")
-            if c["depth16"]:
+            if _bits == 16:
                 png_write_rgb16(f"{OUT}/photo_colormap_16.png", crgb)
             if c.get("cmap_exr"):
                 # цвет конвертируем sRGB -> linear, чтобы EXR выглядел как PNG;
@@ -2374,8 +2491,7 @@ class DepthUI(tk.Tk):
         cur, prev = self._all_images()
         if self.var_show_prev.get() and prev is not None:
             cur = prev
-        info = self.TYPE_INFO[self.type_idx] if cur else ""
-        self.lbl_size.configure(text=f"{cur.width}×{cur.height} · {info}" if cur else "—")
+        self._update_size_label(cur)
         self._set_view(self.cur_view, cur, "Обработайте фото")
 
     def _set_view(self, widget, img, placeholder):
