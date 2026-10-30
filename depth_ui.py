@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import queue
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -666,7 +667,7 @@ def _write_mesh_glb(path, verts, cols, faces):
         f.write(bin_)
 
 
-def _infer_depth(model_path, img, nw, nh, metric=False):
+def _infer_depth(model_path, img, nw, nh, metric=False, on_tick=None):
     import subprocess
     import sys
     import tempfile
@@ -683,8 +684,13 @@ def _infer_depth(model_path, img, nw, nh, metric=False):
         proc = subprocess.Popen([sys.executable, worker, model_path, str(nw), str(nh), tmp_in, tmp_out])
         total = total_ram_mb()
         floor = max(400.0, (total or 0.0) * 0.08)
+        t0 = time.monotonic()
         while proc.poll() is None:
             time.sleep(0.2)
+            if on_tick is not None:
+                # длительность заранее неизвестна: прогресс плавно подтягивается
+                # к 90% шага и ждёт фактического окончания
+                on_tick(min(0.9, 1.0 - math.exp(-(time.monotonic() - t0) / 3.5)))
             av = avail_ram_mb()
             if av is not None and av < floor:
                 proc.kill()
@@ -707,7 +713,7 @@ def _infer_depth(model_path, img, nw, nh, metric=False):
     return d
 
 
-def write_ply(path, dfloat, img_rgb, fov_y=DEFAULT_FOV_Y, scale=1.0):
+def write_ply(path, dfloat, img_rgb, fov_y=DEFAULT_FOV_Y, scale=1.0, on_progress=None):
     X, Y, z, rgb = _points_field(dfloat, img_rgb, fov_y=fov_y, scale=scale)
     h, w = np.asarray(dfloat).shape[:2]
     n = X.size
@@ -730,6 +736,8 @@ def write_ply(path, dfloat, img_rgb, fov_y=DEFAULT_FOV_Y, scale=1.0):
             blk = np.column_stack([Xr[i0:i1].ravel(), Yr[i0:i1].ravel(), zr[i0:i1].ravel(),
                                    rgbr[i0:i1].reshape(-1, 3)])
             np.savetxt(f, blk, fmt="%.6f %.6f %.6f %d %d %d")
+            if on_progress is not None:
+                on_progress(i1 / float(h))
         # грани — против часовой стрелки со стороны камеры (a, a+w, a+w+1, a+1),
         # иначе в Blender и просмотрщиках модель выглядит вывернутой наизнанку
         for i in range(h - 1):
@@ -873,6 +881,8 @@ class NiceSlider(tk.Canvas):
         self.bind("<ButtonRelease-1>", self._release)
         self.bind("<Enter>", lambda _e: self.configure(cursor="hand2"))
         self.bind("<Leave>", lambda _e: self.configure(cursor=""))
+        for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+            self.bind(seq, self._wheel)
         self.var.trace_add("write", lambda *_: self._draw())
 
     def _geom(self):
@@ -901,6 +911,15 @@ class NiceSlider(tk.Canvas):
         self.var.set(round(self.lo + (self.hi - self.lo) * t, 4))
         if self.cmd:
             self.cmd(self.var.get())
+
+    def _wheel(self, e):
+        # колесо над ползунком двигает его влево/вправо, а не прокручивает панель
+        up = getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0
+        step = (self.hi - self.lo) / 100.0 * (1.0 if up else -1.0)
+        self.var.set(round(min(self.hi, max(self.lo, float(self.var.get()) + step)), 4))
+        if self.cmd:
+            self.cmd(self.var.get())
+        return "break"
 
     def _press(self, e):
         self._drag = True
@@ -965,6 +984,67 @@ class NiceCheck(tk.Canvas):
                          fill=self._fg, font="TkDefaultFont")
 
 
+class ApplyButton(tk.Canvas):
+    """Кнопка «Применить» во всю ширину. Пока идёт обработка, она же
+    показывает процент: синяя заливка доходит до края, надпись меняется на «42%»."""
+
+    H = 42
+
+    def __init__(self, master, text="Применить", command=None, bg=BG, font=None, **kw):
+        super().__init__(master, height=self.H, bg=bg, highlightthickness=0, bd=0,
+                         cursor="hand2", **kw)
+        self._text = text
+        self._cmd = command
+        self._font = font
+        self._pct = None
+        self._hover = False
+        self._enabled = True
+        self.bind("<Button-1>", self._click)
+        self.bind("<Enter>", self._enter)
+        self.bind("<Leave>", self._leave)
+        self.bind("<Configure>", lambda _e: self._draw())
+        self._draw()
+
+    def set_busy(self, on):
+        self._pct = 0.0 if on else None
+        self._enabled = not on
+        self.configure(cursor="" if on else "hand2")
+        self._draw()
+
+    def set_progress(self, pct):
+        if self._pct is None:
+            return
+        self._pct = max(0.0, min(100.0, float(pct)))
+        self._draw()
+
+    def _click(self, _e):
+        if self._enabled and self._cmd is not None:
+            self._cmd()
+
+    def _enter(self, _e):
+        self._hover = True
+        self._draw()
+
+    def _leave(self, _e):
+        self._hover = False
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        w, h = max(1, self.winfo_width()), self.H
+        busy = self._pct is not None
+        if busy:
+            self.create_rectangle(0, 0, w, h, fill=CARD2, outline="")
+            if self._pct > 0:
+                self.create_rectangle(0, 0, w * self._pct / 100.0, h, fill=ACCENT, outline="")
+            label = f"{int(round(self._pct))}%"
+        else:
+            self.create_rectangle(0, 0, w, h,
+                                  fill="#6aa1ff" if self._hover else ACCENT, outline="")
+            label = self._text
+        self.create_text(w / 2.0, h / 2.0, text=label, fill="#ffffff", font=self._font)
+
+
 class DepthUI(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1017,16 +1097,27 @@ class DepthUI(tk.Tk):
                 side_bar.pack_forget()
 
         side.bind("<Configure>", _side_scroll)
-        side_canvas.bind("<Configure>", lambda e: (side_canvas.itemconfigure(_side_id, width=e.width),
-                                                   _side_scroll()))
+
+        def _fit_side():
+            # ширина окна в canvas ставится только при изменении значения,
+            # а на первом показе она «не прилипала»: колонка оставалась шириной
+            # по содержимому и правый край настроек обрезался. Сброс в 0
+            # (по размеру содержимого) и повторная установка чинят это.
+            side_canvas.itemconfigure(_side_id, width=0)
+            side_canvas.itemconfigure(_side_id, width=max(1, side_canvas.winfo_width()))
+            _side_scroll()
+
+        side_canvas.bind("<Configure>", lambda _e: side_canvas.after_idle(_fit_side))
 
         def _wheel(e):
             step = -1 if (getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0) else 1
             side_canvas.yview_scroll(step, "units")
 
         def _bind_wheel(w):
-            for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
-                w.bind(seq, _wheel)
+            # у ползунков своё колесо (меняет значение), его не перебиваем
+            if not isinstance(w, NiceSlider):
+                for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+                    w.bind(seq, _wheel)
             for child in w.winfo_children():
                 _bind_wheel(child)
 
@@ -1038,7 +1129,14 @@ class DepthUI(tk.Tk):
                 anchor="w", pady=(0 if first else 16, 7))
 
         # --- фото ---
-        section("ФОТО", first=True)
+        # «Открыть папку» стоит рядом с фото: внизу у кнопки «Применить» она
+        # выглядела непонятно — что именно открывается
+        head = ttk.Frame(side, style="Card.TFrame")
+        head.pack(fill="x", pady=(0, 7))
+        ttk.Label(head, text="ФОТО", style="Section.TLabel").pack(side="left")
+        self.btn_folder = ttk.Button(head, text="Открыть папку", command=self.open_folder)
+        self.btn_folder.pack(side="right")
+
         row = ttk.Frame(side, style="Card.TFrame")
         row.pack(fill="x")
         self.var_src = tk.StringVar(value=SRC)
@@ -1140,14 +1238,11 @@ class DepthUI(tk.Tk):
         check("Инверсия", "invert", 3, 1)
         check("Гибрид (2 прохода)", "render2", 4, 0)
 
-        # --- нижняя панель ---
+        # --- нижняя панель: кнопка во всю ширину ---
         foot = ttk.Frame(outer, style="Root.TFrame")
         foot.grid(row=2, column=0, sticky="ew", pady=(14, 0))
-        self.btn_run = ttk.Button(foot, text="Применить", style="Accent.TButton", command=self.run)
-        self.btn_run.pack(side="left")
-        ttk.Button(foot, text="Открыть папку", command=self.open_folder).pack(side="left", padx=(8, 0))
-        self.lbl_status = ttk.Label(foot, text="Готово. Нажмите «Применить»", style="Muted.TLabel")
-        self.lbl_status.pack(side="left", padx=(14, 0))
+        self.btn_run = ApplyButton(foot, font=self._f_btn, command=self.run)
+        self.btn_run.pack(fill="x")
 
         # --- предпросмотр ---
         self.TYPE_NAMES = ["Глубина", "Цветная карта", "Нормаль", "Цветное фото"]
@@ -1161,22 +1256,25 @@ class DepthUI(tk.Tk):
 
         bar = ttk.Frame(view, style="Card.TFrame")
         bar.pack(fill="x", pady=(9, 9))
+        self.var_show_prev = tk.BooleanVar(value=False)
+        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(side="left", padx=(0, 10))
+        self.var_show_prev.trace_add("write", lambda *_: self.show_preview())
         seg = ttk.Frame(bar, style="Card.TFrame")
         seg.pack(side="left")
         self._seg_btns = []
         for i, name in enumerate(self.TYPE_NAMES):
             b = ttk.Button(seg, text=name, style="Seg.TButton",
                            command=lambda i=i: self.set_type(i))
-            b.pack(side="left", padx=(0, 6))
+            b.pack(side="left", padx=(0, 4))
             self._seg_btns.append(b)
-        self.var_show_prev = tk.BooleanVar(value=False)
-        NiceCheck(bar, "Предыдущий", self.var_show_prev).pack(side="right")
-        self.var_show_prev.trace_add("write", lambda *_: self.show_preview())
-
         holder = tk.Frame(view, bg=BORDER)
         holder.pack(fill="both", expand=True)
         self.cur_view = tk.Label(holder, bg="#0d0f13", fg=MUTED, text="Обработайте фото", bd=0)
         self.cur_view.pack(fill="both", expand=True, padx=1, pady=1)
+        for w in (holder, self.cur_view):
+            for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
+                w.bind(seq, self._wheel_type)
+
 
         self._prev_img = None
         self._cur_img = None
@@ -1189,7 +1287,23 @@ class DepthUI(tk.Tk):
 
         self._set_seg_styles()
         _bind_wheel(side)
+        self._ui_q = queue.Queue()
+        self.after(60, self._poll_ui)
         self.bind("<Configure>", lambda _e: self._schedule_resize())
+
+    def _ui(self, fn, *args):
+        """Выполнить fn(*args) в главном потоке: с Python 3.14 Tkinter больше
+        не принимает after() из рабочего потока, поэтому обновления идут через очередь."""
+        self._ui_q.put((fn, args))
+
+    def _poll_ui(self):
+        try:
+            while True:
+                fn, args = self._ui_q.get_nowait()
+                fn(*args)
+        except queue.Empty:
+            pass
+        self.after(60, self._poll_ui)
 
     # ---------- оформление ----------
     def _init_style(self):
@@ -1237,7 +1351,7 @@ class DepthUI(tk.Tk):
                foreground=[("disabled", "#8f9bb0")])
 
         st.configure("Seg.TButton", background=CARD2, foreground=MUTED, bordercolor=CARD2,
-                     lightcolor=CARD2, darkcolor=CARD2, focuscolor=CARD2, padding=(10, 5))
+                     lightcolor=CARD2, darkcolor=CARD2, focuscolor=CARD2, padding=(8, 5))
         st.map("Seg.TButton", background=[("active", "#333a46")],
                foreground=[("active", FG)])
 
@@ -1320,8 +1434,6 @@ class DepthUI(tk.Tk):
                 f = None
         if f:
             self.var_src.set(f)
-            if hasattr(self, "lbl_status"):
-                self.lbl_status.configure(text=f"Фото выбрано: {os.path.basename(f)}")
 
     def browse_photos(self):
         win = tk.Toplevel(self)
@@ -1550,7 +1662,7 @@ class DepthUI(tk.Tk):
         except Exception:
             pass
         win.destroy()
-        self.lbl_status.configure(text=f"Фото выбрано: {path.split('/')[-1]}")
+        self.var_src.set(path)
 
     def _update_input_hint(self):
         v = max(1, min(10, int(round(float(self.vars["input_mult"].get())))))
@@ -1618,6 +1730,9 @@ class DepthUI(tk.Tk):
         c["glb_out"] = bool(self.vars["glb_out"].get())
         return c
 
+    def _set_progress(self, pct, _text=None):
+        self.btn_run.set_progress(pct)
+
     def run(self):
         if STATE["busy"]:
             return
@@ -1625,16 +1740,23 @@ class DepthUI(tk.Tk):
             c = self.collect()
         except Exception as e:
             # файл не выбран/не читается — иначе ошибка уходила только в консоль
-            self.lbl_status.configure(text="Ошибка")
             messagebox.showerror("Ошибка", str(e))
             return
         json.dump(c, open(CONFIG, "w"), indent=2)
         STATE["busy"] = True
-        self.btn_run.configure(state="disabled")
-        self.lbl_status.configure(text="Обработка...")
+        self.btn_run.set_busy(True)
+        self._set_progress(0)
         threading.Thread(target=self.work, args=(c,), daemon=True).start()
 
     def work(self, c):
+        # прогресс 0..100 на весь проход; у «Гибрида» два прохода делят шкалу
+        base = float(c.get("_pct_base", 0.0))
+        span = float(c.get("_pct_span", 100.0))
+
+        def stage(rel):
+            self._ui(self._set_progress, base + span * float(rel) / 100.0)
+
+        stage(2)
         try:
             gen = str(c.get("gen") or "none")
             if gen.startswith("shape:"):
@@ -1646,8 +1768,7 @@ class DepthUI(tk.Tk):
                     _write_mesh_ply(f"{OUT}/photo_points.ply", verts, cols, faces)
                 if c.get("glb_out"):
                     _write_mesh_glb(f"{OUT}/photo_points.glb", verts, cols, faces)
-                self.after(0, lambda: self.lbl_status.configure(
-                    text="Модель «%s» готова (PLY/GLB)" % kind))
+                stage(100)
                 return
             if c["model"] == "midas":
                 model_paths = [common.find_model("midas_v21_small_256.onnx")]
@@ -1664,23 +1785,18 @@ class DepthUI(tk.Tk):
                                common.find_model("zoedepth_nk_fp16.onnx")]
                 for _lb, _p in zip(labels, model_paths):
                     if not os.path.exists(_p):
-                        self.after(0, lambda: self.lbl_status.configure(
-                            text=f"Скачивание модели {_lb}..."))
+                        stage(4)
                         if _lb == "Large":
                             download_model("large", _p)
                         else:
-                            self.after(0, lambda: self.lbl_status.configure(
-                                text=f"Нет файла {_lb}: положи {os.path.basename(_p)} в папку Z-depth"))
                             raise ValueError(f"{_lb}: нет файла {_p}")
-                self.after(0, lambda: self.lbl_status.configure(
-                    text="Модели Large/MiDaS/Zoe готовы"))
+                stage(8)
             else:
                 model_paths = [common.find_model(f"depth_anything_v2_{c['model']}.onnx")]
                 if not os.path.exists(model_paths[0]):
-                    self.after(0, lambda: self.lbl_status.configure(
-                        text=f"Скачивание модели {c['model'].capitalize()}..."))
+                    stage(4)
                     download_model(c["model"], model_paths[0])
-                    self.after(0, lambda: self.lbl_status.configure(text="Модель скачана"))
+                    stage(8)
             gen = str(c.get("gen") or "none")
             if False and gen != "none":
                 if str(c["src"]).lower().endswith(".exr"):
@@ -1749,12 +1865,14 @@ class DepthUI(tk.Tk):
                             elif c["model"] == "zoe":
                                 nw, nh = 512, 384
 
+                            stage(10)
                             ds = []
                             if c["model"] == "large_mix":
                                 sizes = ((nw, nh), (256, 256), (512, 384))
                                 for _n, _mp, (_nw, _nh) in zip(
                                         ("large", "midas", "zoe"), model_paths, sizes):
-                                    _di = _infer_depth(_mp, img, _nw, _nh, metric=_n == "zoe")
+                                    _di = _infer_depth(_mp, img, _nw, _nh, metric=_n == "zoe",
+                                                       on_tick=lambda f: stage(10 + 38 * f))
                                     if _di.shape != (nh, nw):
                                         _di = np.asarray(Image.fromarray(_di).resize(
                                             (nw, nh), Image.BICUBIC), dtype=np.float32)
@@ -1762,11 +1880,13 @@ class DepthUI(tk.Tk):
                             else:
                                 for _mp in model_paths:
                                     ds.append(_infer_depth(_mp, img, nw, nh,
-                                                           metric=c["model"] in METRIC_MODELS))
+                                                           metric=c["model"] in METRIC_MODELS,
+                                                           on_tick=lambda f: stage(10 + 38 * f)))
                             if c["model"] == "large_mix":
                                 self.__dict__["_mix_ds"] = [np.asarray(_d, dtype=np.float32) for _d in ds]
                             d = np.mean(ds, axis=0)
                             dfull = np.asarray(Image.fromarray(d).resize(img.size, Image.BICUBIC), dtype=np.float32)
+            stage(50)
             g_strength = float(c.get("guided", 0) or 0)
             if g_strength > 0:
                 guide = np.asarray(img.convert("L"), dtype=np.float32) / 255.0
@@ -1800,6 +1920,7 @@ class DepthUI(tk.Tk):
             out_size = str(c["out_size"]).replace("х", "x").replace("Х", "x").replace(" ", "")
             w, h = [int(x) for x in out_size.split("x")]
             dfloat = np.asarray(Image.fromarray(dfloat).resize((w, h), Image.LANCZOS), dtype=np.float32)
+            stage(62)
 
             hp = self.__dict__.get("_hybrid_prev")
             if hp is not None and c.get("hybrid"):
@@ -1829,6 +1950,7 @@ class DepthUI(tk.Tk):
                 Image.fromarray((np.clip(dfloat, 0.0, 1.0) * 65535).astype(np.uint16)).save(f"{OUT}/photo_depth_16.png")
             if c.get("depth32"):
                 Image.fromarray(np.clip(dfloat, 0.0, 1.0)).save(f"{OUT}/photo_depth_32.tif")
+            stage(68)
 
             crgb = colormap_rgb(np.clip(dfloat, 0.0, 1.0))
             _mix_ds = self.__dict__.get("_mix_ds")
@@ -1884,6 +2006,7 @@ class DepthUI(tk.Tk):
             _nrm = normal_map(dfloat) if c.get("normal_exr") else None
             if _nrm is not None:
                 write_exr(f"{OUT}/photo_normal.exr", _nrm)
+            stage(80)
 
             # исходное цветное фото в EXR (float linear) — для качества в меше
             _i = np.asarray(img_out.convert("RGB"), dtype=np.float32) / 255.0
@@ -1892,9 +2015,12 @@ class DepthUI(tk.Tk):
             if c.get("ply_out") or c.get("glb_out"):
                 try:
                     if c.get("ply_out"):
-                        write_ply(f"{OUT}/photo_points.ply", dfloat, img_out)
+                        write_ply(f"{OUT}/photo_points.ply", dfloat, img_out,
+                                  on_progress=lambda f: stage(82 + 12 * f))
                     if c.get("glb_out"):
+                        stage(96)
                         write_glb(f"{OUT}/photo_points.glb", dfloat, img_out)
+                        stage(98)
                 except Exception as e:
                     print("ply/glb error:", e)
 
@@ -1927,10 +2053,9 @@ class DepthUI(tk.Tk):
                 c2["src"] = prev_exr
                 c2["render2"] = False
                 c2["hybrid"] = True
-                try:
-                    self.after(0, lambda: self.lbl_status.configure(text="Рендер 1/3 готов, считаю второй…"))
-                except Exception:
-                    pass
+                c2["_pct_base"] = 48
+                c2["_pct_span"] = 52
+                stage(48)
                 return self.work(c2)
 
 
@@ -1941,17 +2066,21 @@ class DepthUI(tk.Tk):
             nrm_p = Image.fromarray((_nrm * 255.0).astype(np.uint8))
             src_p = img_out.copy()
 
-            self.after(0, lambda: self.done(depth_p.copy(), col_p.copy(),
-                                            nrm_p.copy(), src_p.copy()))
+            self._ui(self.done, depth_p.copy(), col_p.copy(), nrm_p.copy(), src_p.copy())
         except Exception as e:
             msg = str(e)
             import traceback
             with open(os.path.join(common.data_dir(), "ui.log"), "a") as f:
                 f.write(traceback.format_exc() + "\n")
-            self.after(0, lambda msg=msg: self.fail(msg))
+            self._ui(self.fail, msg)
 
     def cycle_type(self):
         self.set_type(self.type_idx + 1)
+
+    def _wheel_type(self, e):
+        up = getattr(e, "num", 0) == 4 or getattr(e, "delta", 0) > 0
+        self.set_type(self.type_idx - 1 if up else self.type_idx + 1)
+        return "break"
 
     def _schedule_resize(self):
         if hasattr(self, "_resize_after"):
@@ -1978,8 +2107,7 @@ class DepthUI(tk.Tk):
 
     def done(self, depth, col, nrm, src):
         STATE["busy"] = False
-        self.btn_run.configure(state="normal")
-        self.lbl_status.configure(text="Готово ✔")
+        self.btn_run.set_busy(False)
         if self._cur_img is not None:
             self._prev_img = self._cur_img
             self._prev_col = self._cur_col
@@ -2013,8 +2141,7 @@ class DepthUI(tk.Tk):
 
     def fail(self, msg):
         STATE["busy"] = False
-        self.btn_run.configure(state="normal")
-        self.lbl_status.configure(text="Ошибка")
+        self.btn_run.set_busy(False)
         messagebox.showerror("Ошибка", msg)
 
     def open_folder(self):
