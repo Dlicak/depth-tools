@@ -1272,6 +1272,7 @@ class DepthUI(tk.Tk):
         self.cur_view = tk.Label(holder, bg="#0d0f13", fg=MUTED, text="Обработайте фото", bd=0)
         self.cur_view.pack(fill="both", expand=True, padx=1, pady=1)
         self._preview_holder = holder
+        self._preview_card = view
         for w in (holder, self.cur_view):
             for seq in ("<Button-4>", "<Button-5>", "<MouseWheel>"):
                 w.bind(seq, self._wheel_type)
@@ -2089,7 +2090,9 @@ class DepthUI(tk.Tk):
         return "break"
 
     def _wheel_any(self, e):
-        h = self.__dict__.get("_preview_holder")
+        # вся карточка предпросмотра — зона колеса: картинка, кнопки типов и
+        # галочка «Предыдущий»; иначе над ними колесо просто «не реагировало»
+        h = self.__dict__.get("_preview_card")
         if h is None or not h.winfo_ismapped():
             return None
         x, y = getattr(e, "x_root", 0), getattr(e, "y_root", 0)
